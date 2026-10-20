@@ -65,6 +65,14 @@ class Event(models.Model):
         return {field: getattr(self, field) for field in fields}
 
 
+class DraftAdmission(models.Model):
+    """A shared creation budget, keyed by a secret digest of the client network."""
+
+    key = models.CharField(max_length=64, primary_key=True)
+    window_start = models.DateTimeField(default=timezone.now, db_index=True)
+    count = models.PositiveIntegerField(default=0)
+
+
 class Draft(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     event = models.ForeignKey(Event, on_delete=models.PROTECT)

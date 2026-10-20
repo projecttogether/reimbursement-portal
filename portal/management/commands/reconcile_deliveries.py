@@ -23,7 +23,9 @@ class Command(BaseCommand):
 
             ingest_event(
                 {
-                    "type": f"activity.{snapshot['status']}",
+                    "type": "reconciliation.rejected"
+                    if snapshot["status"] == "rejected"
+                    else f"activity.{snapshot['status']}",
                     "created_at": timezone.now().isoformat(),
                     "data": {
                         "id": f"reconcile-{attempt.id}-{snapshot['status']}",

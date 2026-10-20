@@ -6,7 +6,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from portal.models import Claim, DeliveryEvent, Draft, Job, Upload
+from portal.models import Claim, DeliveryEvent, Draft, DraftAdmission, Job, Upload
 from portal.services.documents import ProcessingError
 from portal.services.storage import remove_keys
 
@@ -94,6 +94,7 @@ def cleanup(*, execute=False):
     }
     if not execute:
         return result
+    DraftAdmission.objects.filter(window_start__lt=now - timedelta(days=2)).delete()
     for claim_id in due:
         if (
             not settings.CONTENT_PURGE_ENABLED

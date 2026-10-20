@@ -68,7 +68,6 @@ def event_form(request, event_slug):
         return render(request, "portal/closed.html", {"event": event}, status=403)
     if request.GET.get("new") == "1":
         request.session.pop(f"draft:{event.slug}", None)
-    session_hash(request, create=True)
     try:
         draft, token = get_or_create_draft(request, event)
     except SubmissionError as exc:

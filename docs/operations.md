@@ -45,6 +45,19 @@ Use completely separate staging databases, files, credentials, and recipients.
 Set `DEPLOYMENT_ENV=staging` and a nonempty `TEST_RECIPIENT_ALLOWLIST`. The send
 adapter checks that list as well as the approved recipient list.
 
+## Draft admission
+
+New drafts share a PostgreSQL-backed budget across sessions and web processes.
+`MAX_DRAFTS_PER_NETWORK` defaults to 300 creations per 24 hours per IPv4 address or
+IPv6 /64, allowing the expected 250 participants to share a venue connection.
+Existing drafts remain accessible after the creation limit is reached. No raw IP
+address is stored in the counter, and inactive counter keys expire after two days.
+Set `TRUSTED_PROXY_CIDRS` to the exact reverse-proxy networks if the application
+receives proxied requests. The proxy must replace or correctly append
+`X-Forwarded-For`; the app walks that chain from the trusted connection to the first
+untrusted address. With no trusted proxies configured, it uses `REMOTE_ADDR`.
+Configure the edge's connection/request limits as well and monitor 429/503 rates.
+
 ## MailerSend and handoff
 
 Create a version 2 webhook for sent, delivered, deferred, soft/hard bounced, and
@@ -99,6 +112,9 @@ the message. These cases become `send_unknown` and do not auto-retry. Inspect
 provider activity first. Signed events with an attempt tag may resolve the case.
 The reconciliation command queries known message IDs without resending; an
 unknown send without a message ID requires manual provider lookup.
+Reconciliation treats MailerSend's `rejected` email status as a terminal failure,
+using suppression or hard-bounce details when present. It retains the PDF for
+resolution and never resends automatically.
 
 ## Monitoring and maintenance
 

@@ -34,3 +34,9 @@ available to Node, set `BASE_URL`, `FIXTURES_DIR` and `OUTPUT_DIR`, then run it 
 Node. Supply only synthetic `train.png`, two-page `hotel.pdf`, and `signature.png`
 fixtures. It verifies desktop/mobile completion, both signature paths, review
 reset, row/file association, totals, delivery, and cross-session receipt denial.
+
+Run `tests/browser/signature-recovery.cjs` with the same `BASE_URL` and
+`FIXTURES_DIR` to inject signature validation failures, polling errors, polling
+timeouts, and a busy deletion response. It checks that uploaded and drawn
+signatures can be replaced repeatedly without exhausting the three-file limit.
+Upload and submission endpoints are intercepted in this test, so it sends no mail.

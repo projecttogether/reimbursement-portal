@@ -13,6 +13,7 @@ from django.utils.crypto import constant_time_compare, salted_hmac
 
 from portal.forms import ClaimForm, parse_amount
 from portal.models import Claim, Draft, Event, Expense, Job, Upload
+from portal.services.draft_limits import reserve_draft
 from portal.services.storage import path_for
 
 
@@ -33,7 +34,6 @@ def session_hash(request, *, create=False):
     return salted_hmac("draft-session", request.session.session_key).hexdigest()
 
 
-@transaction.atomic
 def get_or_create_draft(request, event):
     binding = session_hash(request)
     current = request.session.get(f"draft:{event.slug}", {})
@@ -62,6 +62,14 @@ def get_or_create_draft(request, event):
         raise SubmissionError(
             "Zu viele neue Formulare. Bitte versuche es später erneut.", status=429
         )
+    if not reserve_draft(request):
+        raise SubmissionError(
+            "Zu viele neue Formulare aus diesem Netzwerk. Bitte versuche es später erneut.",
+            status=429,
+        )
+    # Reject before creating a session. Session creation must also commit outside
+    # a transaction that can roll back after a normal admission rejection.
+    binding = session_hash(request, create=True)
     token = secrets.token_urlsafe(32)
     draft = Draft.objects.create(
         event=event,

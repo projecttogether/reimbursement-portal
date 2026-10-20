@@ -16,6 +16,7 @@ EVENT_STATES = {
     "activity.soft_bounced": "provider_accepted",
     "activity.hard_bounced": "failed",
     "activity.suppressed": "failed",
+    "reconciliation.rejected": "failed",
 }
 
 
@@ -119,7 +120,7 @@ def apply_event(event):
         if not (attempt.state == "failed" and state == "delivered"):
             attempt.state = state
             attempt.error_code = (
-                event.kind.replace("activity.", "provider_") if state == "failed" else ""
+                f"provider_{event.kind.rsplit('.', 1)[-1]}" if state == "failed" else ""
             )
     attempt.save()
     event.attempt, event.applied = attempt, True

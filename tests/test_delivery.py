@@ -5,6 +5,7 @@ from datetime import timedelta
 
 import httpx
 import pytest
+from django.core.management import call_command
 from django.utils import timezone
 
 from portal.jobs import reclaim_stale_jobs, run_one
@@ -203,3 +204,73 @@ def test_staging_recipient_guard_blocks_even_configured_address(delivery, settin
     settings.TEST_RECIPIENT_ALLOWLIST = ["test-only@example.invalid"]
     result = mailersend.send_pdf(DeliveryAttempt.objects.create(delivery=delivery))
     assert result.error_code == "test_recipient_blocked"
+
+
+@pytest.mark.parametrize("initial_state", ["provider_accepted", "paused", "send_unknown"])
+@pytest.mark.parametrize(
+    ("details", "code"),
+    [
+        ({}, "provider_rejected"),
+        ({"suppression_reason": "blocklisted"}, "provider_suppressed"),
+        ({"suppression_reason": "hard_bounced"}, "provider_hard_bounced"),
+        ({"activity": [{"type": "suppressed"}]}, "provider_suppressed"),
+    ],
+)
+def test_reconciliation_marks_rejected_messages_failed_without_resending(
+    delivery, monkeypatch, initial_state, details, code
+):
+    attempt = DeliveryAttempt.objects.create(
+        delivery=delivery, message_id="rejected-message", state=initial_state
+    )
+    calls = []
+
+    def provider(request):
+        calls.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/v1/messages/rejected-message"
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "emails": [
+                        {
+                            "id": "rejected-email",
+                            "to": delivery.recipient,
+                            "status": "rejected",
+                            **details,
+                        }
+                    ]
+                }
+            },
+        )
+
+    mock_provider(monkeypatch, provider)
+    call_command("reconcile_deliveries")
+    call_command("reconcile_deliveries")
+    attempt.refresh_from_db()
+    delivery.refresh_from_db()
+    delivery.claim.refresh_from_db()
+    assert (attempt.state, attempt.error_code) == ("failed", code)
+    assert (delivery.state, delivery.error_code) == ("failed", code)
+    assert delivery.claim.retention_due is None
+    assert path_for(delivery.claim.pdf_key).is_file()
+    assert len(calls) == 1
+    assert DeliveryEvent.objects.get().applied
+    assert DeliveryAttempt.objects.count() == 1
+    assert not Job.objects.exists()
+
+
+def test_rejected_snapshot_cannot_fail_another_recipient(delivery, monkeypatch):
+    attempt = DeliveryAttempt.objects.create(
+        delivery=delivery, message_id="rejected-message", state="provider_accepted"
+    )
+    mock_provider(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200, json={"data": {"emails": [{"status": "rejected", "to": "other@example.invalid"}]}}
+        ),
+    )
+    call_command("reconcile_deliveries")
+    attempt.refresh_from_db()
+    assert attempt.state == "provider_accepted"
+    assert not DeliveryEvent.objects.get().applied

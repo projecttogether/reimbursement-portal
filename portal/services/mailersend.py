@@ -144,14 +144,47 @@ def message_snapshot(message):
     """Only interpret explicitly documented email statuses, never an empty emails list."""
     if not isinstance(message, dict):
         return None
-    for email in message.get("emails", []):
+    emails = message.get("emails")
+    if not isinstance(emails, list):
+        return None
+    for email in emails:
+        if not isinstance(email, dict):
+            continue
         status = email.get("status")
-        if status in {"delivered", "hard_bounced", "soft_bounced", "suppressed", "sent", "queued"}:
+        if status == "rejected":
+            # Rejection is terminal even when no webhook/activity was recorded.
+            # Prefer documented suppression or bounce details when available.
+            reason = email.get("suppression_reason")
+            activities = email.get("activity") or []
+            kinds = (
+                {item.get("type") for item in activities if isinstance(item, dict)}
+                if isinstance(activities, list)
+                else set()
+            )
+            if reason == "hard_bounced" or "hard_bounced" in kinds:
+                status = "hard_bounced"
+            elif (
+                reason in {"on_hold", "unsubscribed", "spam_complained", "blocklisted"}
+                or "suppressed" in kinds
+            ):
+                status = "suppressed"
+        if status in {
+            "delivered",
+            "hard_bounced",
+            "soft_bounced",
+            "suppressed",
+            "sent",
+            "queued",
+            "rejected",
+        }:
             return {
                 "status": status,
-                "recipient": email.get("recipient", {}).get("email")
-                if isinstance(email.get("recipient"), dict)
-                else email.get("recipient"),
+                "recipient": email.get("to")
+                or (
+                    email.get("recipient", {}).get("email")
+                    if isinstance(email.get("recipient"), dict)
+                    else email.get("recipient")
+                ),
                 "id": email.get("id", ""),
             }
     return None

@@ -14,6 +14,7 @@
   const signatureStatus = document.getElementById("signature-status");
   const rows = [];
   let signature = null,
+    signatureBusy = false,
     hasInk = false,
     drawing = false,
     submitting = false,
@@ -59,6 +60,7 @@
         result.error || "Die Anfrage ist fehlgeschlagen.",
       );
       error.fields = result.fields;
+      error.status = response.status;
       throw error;
     }
     return result;
@@ -332,15 +334,59 @@
   document.getElementById("add-expense").addEventListener("click", addRow);
   addRow();
 
-  function clearSignature() {
+  async function discardSignature() {
+    if (signature?.delete_url) {
+      try {
+        await api(signature.delete_url, { method: "DELETE" });
+      } catch (error) {
+        // A previous successful deletion may have lost its response.
+        if (error.status !== 404) throw error;
+      }
+    }
+    signature = null;
+  }
+  async function clearSignature() {
+    await discardSignature();
     context.clearRect(0, 0, canvas.width, canvas.height);
     hasInk = false;
-    if (signature?.delete_url)
-      api(signature.delete_url, { method: "DELETE" }).catch(() => {});
-    signature = null;
     document.getElementById("signature-file").value = "";
     signatureStatus.textContent =
       "Mit Finger, Stift oder Maus unterschreiben oder ein Bild hochladen. JPG/PNG, höchstens 1 MB.";
+  }
+  async function uploadSignature(blob) {
+    try {
+      signature = await uploadFile(blob, "signature", null, (update) => {
+        if (update.id) signature = { ...signature, ...update };
+      });
+    } catch (error) {
+      // Retain the deletion handle even if validation or polling fails.
+      if (signature) signature.state = "failed";
+      throw error;
+    }
+  }
+  async function signatureAction(action) {
+    if (signatureBusy || submitting) return false;
+    clearErrors();
+    signatureBusy = true;
+    const controls = [
+      "signature-file",
+      "clear-signature",
+      "edit-button",
+      "submit-button",
+    ];
+    controls.forEach((id) => (document.getElementById(id).disabled = true));
+    try {
+      await action();
+      return true;
+    } catch (error) {
+      showError(error.message);
+      signatureStatus.textContent =
+        "Bitte lösche die Unterschrift oder versuche es erneut.";
+      return false;
+    } finally {
+      signatureBusy = false;
+      controls.forEach((id) => (document.getElementById(id).disabled = false));
+    }
   }
   function position(event) {
     const bounds = canvas.getBoundingClientRect();
@@ -350,8 +396,12 @@
     ];
   }
   canvas.addEventListener("pointerdown", (event) => {
-    if (submitting) return;
-    if (signature) clearSignature();
+    if (submitting || signatureBusy) return;
+    if (signature) {
+      if (!hasInk) context.clearRect(0, 0, canvas.width, canvas.height);
+      // Delete the previous server record before uploading the new drawing.
+      signature.state = "obsolete";
+    }
     canvas.setPointerCapture(event.pointerId);
     const [x, y] = position(event);
     context.beginPath();
@@ -373,7 +423,7 @@
   canvas.addEventListener("pointercancel", () => (drawing = false));
   document
     .getElementById("clear-signature")
-    .addEventListener("click", clearSignature);
+    .addEventListener("click", () => signatureAction(clearSignature));
   document
     .getElementById("signature-file")
     .addEventListener("change", async (event) => {
@@ -383,13 +433,11 @@
         showError("Die Unterschrift darf höchstens 1 MB groß sein.");
         return;
       }
-      clearSignature();
-      signatureStatus.textContent =
-        "Unterschrift wird hochgeladen und geprüft …";
-      try {
-        signature = await uploadFile(file, "signature", null, (update) => {
-          if (update.id) signature = { ...signature, ...update };
-        });
+      await signatureAction(async () => {
+        await clearSignature();
+        signatureStatus.textContent =
+          "Unterschrift wird hochgeladen und geprüft …";
+        await uploadSignature(file);
         signatureStatus.textContent = `Unterschrift geprüft: ${file.name}`;
         const image = await createImageBitmap(file);
         const scale = Math.min(
@@ -404,12 +452,7 @@
           image.height * scale,
         );
         image.close();
-      } catch (error) {
-        signature = null;
-        showError(error.message);
-        signatureStatus.textContent =
-          "Bitte lade die Unterschrift erneut hoch.";
-      }
+      });
     });
   document.getElementById("review-button").addEventListener("click", () => {
     clearErrors();
@@ -486,9 +529,9 @@
     document.getElementById("step-review").setAttribute("aria-current", "step");
     review.scrollIntoView({ behavior: "smooth", block: "start" });
   });
-  document.getElementById("edit-button").addEventListener("click", () => {
+  document.getElementById("edit-button").addEventListener("click", async () => {
     clearErrors();
-    clearSignature();
+    if (!(await signatureAction(clearSignature))) return;
     form.elements.declaration.checked = false;
     form.elements.privacy_acknowledged.checked = false;
     details.hidden = false;
@@ -503,7 +546,7 @@
   });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (submitting || review.hidden) return;
+    if (submitting || signatureBusy || review.hidden) return;
     clearErrors();
     if (
       !form.elements.declaration.checked ||
@@ -524,10 +567,11 @@
       .forEach((element) => (element.disabled = true));
     try {
       if (!signature || signature.state !== "ready") {
+        await discardSignature();
         const blob = await new Promise((resolve) =>
           canvas.toBlob(resolve, "image/png"),
         );
-        signature = await uploadFile(blob, "signature");
+        await uploadSignature(blob);
       }
       const data = {
         draft_id: config.draft_id,
