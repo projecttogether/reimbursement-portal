@@ -58,6 +58,18 @@ def image_bytes(*, signature=False, color="white", size=(900, 1200)):
     return output.getvalue()
 
 
+def camera_jpeg_bytes(*, primary_color="forestgreen"):
+    """A JPEG with an MPF header and a separate auxiliary picture."""
+    primary = Image.new("RGB", (320, 180), primary_color)
+    auxiliary = Image.new("RGB", (80, 60), "red")
+    exif = Image.Exif()
+    exif[274] = 6  # Camera orientation, 90 degrees clockwise.
+    exif[270] = "Synthetic private camera metadata"
+    output = io.BytesIO()
+    primary.save(output, "MPO", save_all=True, append_images=[auxiliary], exif=exif)
+    return output.getvalue()
+
+
 @pytest.fixture
 def prepared(client, event):
     response = client.get(f"/forms/{event.slug}/")

@@ -54,6 +54,7 @@ Typed participant data stays in browser memory before acceptance. No localStorag
 
 - Maximum 30 expense rows, three receipts per row, 30 pages per individual PDF, 100 receipt pages per claim.
 - PDF, JPG/JPEG, PNG only. Reject encrypted/corrupt PDFs, unsupported active content, SVG, HEIC, archives, and images over 40 million decoded pixels.
+- Camera JPEGs carrying MPO headers use their primary picture. Normalize it to one image, apply orientation, and remove camera metadata and auxiliary pictures.
 - Signature: drawn PNG or uploaded PNG/JPEG, maximum 1,000,000 bytes. Normalize orientation and transparency, and reject an empty signature image.
 - Scan source files with private ClamAV before marking them ready. Scanner failure leaves uploads pending; never treat an outage as a clean scan.
 - Enforce per-file and aggregate quotas in application code and bound proxy request sizes. Limit active drafts and expire abandoned uploads.

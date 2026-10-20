@@ -61,10 +61,11 @@ def check_pdf_objects(reader):
 
 def normalized_image(source, *, signature=False):
     with Image.open(source) as image:
-        if image.format not in {"JPEG", "PNG"}:
+        if image.format not in {"JPEG", "MPO", "PNG"}:
             raise DocumentError("unsupported_type")
         image.verify()
     with Image.open(source) as image:
+        # Camera JPEGs with auxiliary MPO pictures open on their primary image.
         image = ImageOps.exif_transpose(image)
         rgba = image.convert("RGBA")
         clean = Image.new("RGB", rgba.size, "white")

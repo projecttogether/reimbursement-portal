@@ -12,7 +12,7 @@ from portal.file_worker import DocumentError, build_pdf, validate_file
 from portal.jobs import run_one
 from portal.models import Claim, Job
 from portal.services.documents import build_claim_pdf, temporary_workspace
-from tests.conftest import image_bytes
+from tests.conftest import camera_jpeg_bytes, image_bytes
 
 pytestmark = pytest.mark.django_db
 
@@ -35,6 +35,13 @@ def test_blank_signature_and_mislabeled_documents_rejected(tmp_path):
     source.write_bytes(b"<svg>not an image</svg>")
     with pytest.raises(DocumentError, match="unsupported_type"):
         validate_file(source, tmp_path / "clean", "receipt")
+
+
+def test_blank_camera_signature_cannot_use_ink_from_an_auxiliary_picture(tmp_path):
+    source = tmp_path / "signature.jpg"
+    source.write_bytes(camera_jpeg_bytes(primary_color="white"))
+    with pytest.raises(DocumentError, match="empty_signature"):
+        validate_file(source, tmp_path / "clean", "signature")
 
 
 def test_encrypted_and_active_pdfs_rejected(tmp_path):

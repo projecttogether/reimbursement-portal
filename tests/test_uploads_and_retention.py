@@ -1,16 +1,18 @@
+import io
 from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
+from PIL import Image
 
 from portal.jobs import run_one
 from portal.models import Job, Upload
 from portal.services.documents import ProcessingError
 from portal.services.retention import cleanup, purge_claim
 from portal.services.storage import path_for
-from tests.conftest import image_bytes
+from tests.conftest import camera_jpeg_bytes, image_bytes
 
 pytestmark = pytest.mark.django_db
 
@@ -33,6 +35,37 @@ def test_real_upload_is_validated_asynchronously(prepared, uploaded_file):
     assert upload.state == "ready", upload.error_code
     assert upload.normalized_key.endswith(".jpg")
     assert prepared["client"].get(result["status_url"]).json()["pages"] == 1
+
+
+@pytest.mark.parametrize("kind", ["receipt", "signature"])
+def test_camera_jpeg_with_auxiliary_picture_is_normalized(prepared, kind):
+    content = camera_jpeg_bytes()
+    with Image.open(io.BytesIO(content)) as source:
+        assert source.format == "MPO" and source.n_frames == 2
+        assert source.getexif()[274] == 6
+    response = prepared["client"].post(
+        "/forms/test/uploads/",
+        {
+            "draft_id": str(prepared["draft"].id),
+            "token": prepared["data"]["token"],
+            "kind": kind,
+            "expense_id": prepared["data"]["expenses"][0]["id"] if kind == "receipt" else "",
+            "file": SimpleUploadedFile("camera.jpg", content, content_type="image/jpeg"),
+        },
+    )
+    assert response.status_code == 202, response.content
+    assert run_one()
+    upload = Upload.objects.get(pk=response.json()["id"])
+    assert upload.state == "ready", upload.error_code
+    assert upload.pages == 1
+    with Image.open(path_for(upload.normalized_key)) as clean:
+        assert clean.format == ("JPEG" if kind == "receipt" else "PNG")
+        assert getattr(clean, "n_frames", 1) == 1
+        assert clean.size == (180, 320)
+        assert not clean.getexif()
+        assert not {"mp", "exif", "xmp", "icc_profile"}.intersection(clean.info)
+        red, green, _ = clean.getpixel((90, 160))
+        assert green > red + 50  # Primary green picture, never the auxiliary red picture.
 
 
 def test_scanner_failure_keeps_file_pending(prepared, uploaded_file):
