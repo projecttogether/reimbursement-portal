@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="de">
+<head><meta charset="utf-8"><style>
+@page { size: A4; margin: 17mm 15mm 19mm; @bottom-left { content: "PT Reimbursement Portal · {{ claim.reference }}"; font-size: 7pt; color: #666; } @bottom-right { content: counter(page) " / " counter(pages); font-size: 8pt; } }
+* { box-sizing: border-box; }
+body { font-family: "DejaVu Sans", sans-serif; font-size: 9pt; color: #172033; line-height: 1.4; }
+h1 { color: #00115a; font-size: 21pt; margin: 0; } h2 { color: #00115a; font-size: 12pt; margin-top: 5mm; }
+.eyebrow { color: #004632; font-size: 8pt; text-transform: uppercase; letter-spacing: 1pt; }
+.meta { font-size: 8pt; color: #555; } .box { background: #f0f5f8; padding: 3mm; }
+table { width: 100%; border-collapse: collapse; table-layout: fixed; } thead { display: table-header-group; }
+th, td { text-align: left; padding: 2mm 1.5mm; border-bottom: 0.3mm solid #d9e1e8; overflow-wrap: anywhere; vertical-align: top; }
+th { background: #00115a; color: white; font-size: 8pt; } .amount { text-align: right; white-space: nowrap; }
+.signature { max-width: 65mm; max-height: 18mm; } .declaration { break-inside: avoid; } .multiline { white-space: pre-wrap; overflow-wrap: anywhere; }
+</style></head>
+<body>
+<div class="eyebrow">ProjectTogether gGmbH · Externe ohne Anstellungsvertrag</div>
+<h1>Erstattungsformular</h1>
+<p class="meta">Referenz {{ claim.reference }}<br>Eingereicht am {{ claim.submitted_at|date:"d.m.Y H:i T" }} · Formularversion {{ claim.snapshot.config_version }}</p>
+<div class="box"><strong>{{ claim.snapshot.name }}</strong><br>KST: {{ claim.snapshot.cost_center }}{% if claim.snapshot.cost_object %} · KTR: {{ claim.snapshot.cost_object }}{% endif %}{% if claim.snapshot.finance_note %}<br>DATEV-Vermerkfeld: {{ claim.snapshot.finance_note }}{% endif %}</div>
+<h2>Angaben zur externen Person</h2>
+<p><strong>{{ claim.full_name }}</strong><br><span class="multiline">{{ claim.postal_address }}</span><br>{{ claim.email }}<br>IBAN: {{ claim.iban }}</p>
+<h2>Erläuterung zur Erfüllung satzungsmäßiger Zwecke</h2>
+<p class="multiline">{{ claim.purpose }}</p>
+{% if claim.trip_start %}<p>Ort: {{ claim.trip_location }}<br>Reisezeitraum: {{ claim.trip_start|date:"d.m.Y" }} bis {{ claim.trip_end|date:"d.m.Y" }}</p>{% endif %}
+<h2>Auslagenpositionen</h2>
+<table><colgroup><col style="width: 6%"><col style="width: 22%"><col style="width: 29%"><col style="width: 21%"><col style="width: 22%"></colgroup><thead><tr><th>Nr.</th><th>Name Geschäftspartner</th><th>Anlass/Zweck</th><th>Referenz/Rechnungsnr.</th><th class="amount">Betrag</th></tr></thead><tbody>
+{% for expense in expenses %}<tr><td>{{ forloop.counter }}</td><td>{{ expense.merchant }}</td><td>{{ expense.purpose }}</td><td>{{ expense.receipt_reference }}</td><td class="amount">{{ expense.amount|floatformat:2 }} {{ expense.currency }}</td></tr>{% endfor %}
+</tbody></table>
+{% for currency, total in claim.totals.items %}<p class="amount"><strong>Summe {{ currency }}: {{ total|floatformat:2 }} {{ currency }}</strong></p>{% endfor %}
+<p class="meta">Die Belege folgen in Positionsreihenfolge und innerhalb jeder Position in der gewählten Dateireihenfolge. PDF-Lesezeichen ordnen die Seiten den Positionen zu.</p>
+<div class="declaration"><h2>Erklärung und Unterschrift</h2><p>{{ claim.snapshot.declaration }}</p><img class="signature" src="{{ signature_uri }}" alt="Unterschrift"><p>{{ claim.full_name }} · {{ claim.submitted_at|date:"d.m.Y" }}</p><p class="meta">Erklärung {{ claim.snapshot.declaration_version }} bestätigt. Datenschutzhinweis {{ claim.snapshot.privacy_version }} zur Kenntnis genommen.</p></div>
+</body></html>

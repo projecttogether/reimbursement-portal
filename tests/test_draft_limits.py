@@ -1,0 +1,65 @@
+from datetime import timedelta
+
+import pytest
+from django.contrib.sessions.models import Session
+from django.test import Client, RequestFactory
+from django.utils import timezone
+
+from portal.models import Draft, DraftAdmission
+from portal.services.draft_limits import client_network
+from portal.services.retention import cleanup
+
+pytestmark = pytest.mark.django_db
+
+
+def test_cookie_resets_cannot_exhaust_draft_capacity(event, settings):
+    settings.MAX_DRAFTS_PER_NETWORK = 3
+    clients = [Client() for _ in range(4)]
+    assert [client.get("/forms/test/").status_code for client in clients] == [200, 200, 200, 429]
+    assert Draft.objects.count() == 3
+    assert Session.objects.count() == 3
+    assert DraftAdmission.objects.get().count == 3
+    # Existing work is accessible after the new-draft budget is exhausted.
+    assert clients[0].get("/forms/test/").status_code == 200
+    assert Client().get("/forms/test/", REMOTE_ADDR="192.0.2.5").status_code == 200
+    # A direct caller cannot bypass the limit by inventing a forwarded address.
+    assert Client().get("/forms/test/", HTTP_X_FORWARDED_FOR="192.0.2.6").status_code == 429
+
+
+def test_expired_budget_resets_and_old_keys_are_cleaned(event, settings):
+    settings.MAX_DRAFTS_PER_NETWORK = 1
+    assert Client().get("/forms/test/").status_code == 200
+    DraftAdmission.objects.update(window_start=timezone.now() - timedelta(hours=25))
+    assert Client().get("/forms/test/").status_code == 200
+    assert DraftAdmission.objects.get().count == 1
+    DraftAdmission.objects.update(window_start=timezone.now() - timedelta(days=3))
+    cleanup(execute=True)
+    assert not DraftAdmission.objects.exists()
+
+
+def test_full_capacity_rejects_before_creating_another_session(event, settings):
+    settings.MAX_ACTIVE_DRAFTS = 1
+    assert Client().get("/forms/test/").status_code == 200
+    assert Client().get("/forms/test/").status_code == 503
+    assert Session.objects.count() == 1
+
+
+@pytest.mark.parametrize(
+    ("peer", "forwarded", "proxies", "expected"),
+    [
+        ("192.0.2.1", "198.51.100.1", [], "192.0.2.1/32"),
+        ("10.0.0.2", "198.51.100.1", ["10.0.0.0/8"], "198.51.100.1/32"),
+        ("10.0.0.2", "203.0.113.2, 198.51.100.1", ["10.0.0.0/8"], "198.51.100.1/32"),
+        ("10.0.0.2", "198.51.100.1, 10.0.0.3", ["10.0.0.0/8"], "198.51.100.1/32"),
+        ("10.0.0.2", "invalid", ["10.0.0.0/8"], "10.0.0.2/32"),
+        ("2001:db8::1", "", [], "2001:db8::/64"),
+        ("2001:db8::ffff", "", [], "2001:db8::/64"),
+        ("::ffff:192.0.2.1", "", [], "192.0.2.1/32"),
+    ],
+)
+def test_client_network_trusts_only_configured_proxy_chain(
+    settings, peer, forwarded, proxies, expected
+):
+    settings.TRUSTED_PROXY_CIDRS = proxies
+    request = RequestFactory().get("/", REMOTE_ADDR=peer, HTTP_X_FORWARDED_FOR=forwarded)
+    assert client_network(request) == expected
