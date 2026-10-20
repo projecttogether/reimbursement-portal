@@ -1,0 +1,24 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: reimbursement
+          POSTGRES_USER: reimbursement
+          POSTGRES_PASSWORD: test-only
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U reimbursement" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --target test -t reimbursement-test .
+      - run: docker run --rm reimbursement-test ruff check .
+      - run: docker run --rm reimbursement-test ruff format --check .
+      - run: docker run --rm reimbursement-test python manage.py makemigrations --check --dry-run
+      - run: docker run --rm --network host -e DATABASE_URL=postgresql://reimbursement:test-only@127.0.0.1:5432/reimbursement reimbursement-test pytest -q
+      - run: docker build --target runtime -t reimbursement-runtime .
