@@ -1,10 +1,7 @@
 import re
-from decimal import Decimal
 
 from django import forms
 from stdnum import iban
-
-CURRENCY_PRECISION = {"EUR": 2, "CHF": 2, "GBP": 2, "USD": 2, "JPY": 0}
 
 
 class ClaimForm(forms.Form):
@@ -61,13 +58,3 @@ class ClaimForm(forms.Form):
         if bool(start) != bool(end):
             self.add_error("trip_end", "Bitte gib beide Reisedaten an.")
         return data
-
-
-def parse_amount(value, currency):
-    if not isinstance(value, str) or not re.fullmatch(r"\d{1,9}(?:[,.]\d{1,2})?", value.strip()):
-        raise ValueError("Betrag ohne Tausendertrennzeichen eingeben, z. B. 12,50.")
-    amount = Decimal(value.strip().replace(",", "."))
-    precision = CURRENCY_PRECISION.get(currency)
-    if precision is None or -amount.as_tuple().exponent > precision or amount <= 0:
-        raise ValueError("Bitte gib einen positiven Betrag mit passender Währungsgenauigkeit ein.")
-    return amount

@@ -5,7 +5,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from portal.forms import CURRENCY_PRECISION
+from portal.intake import CURRENCY_PRECISION
 from portal.models import Event
 
 

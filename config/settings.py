@@ -6,6 +6,7 @@ from django.core.exceptions import ImproperlyConfigured
 
 from portal.constants import MAX_IMAGE_PIXELS as MAX_IMAGE_PIXELS
 from portal.constants import MAX_NORMALIZED_FILE_BYTES as MAX_NORMALIZED_FILE_BYTES
+from portal.constants import MAX_PDF_PAGES as MAX_PDF_PAGES
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEBUG = os.getenv("DJANGO_DEBUG", "0") == "1"
@@ -89,7 +90,6 @@ MAX_SIGNATURE_BYTES = 1_000_000
 MAX_FINAL_PDF_BYTES = int(os.getenv("MAX_FINAL_PDF_BYTES", "10000000"))
 MAX_EXPENSES = 30
 MAX_FILES_PER_EXPENSE = 3
-MAX_PDF_PAGES = 30
 MAX_CLAIM_PAGES = 100
 MAX_DRAFT_DERIVED_BYTES = 100_000_000
 MAX_RENDER_WORKSPACE_BYTES = 600_000_000
