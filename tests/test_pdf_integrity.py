@@ -8,7 +8,12 @@ from PIL import Image
 from pypdf import PdfWriter
 
 from portal.file_worker import DocumentError, build_pdf, receipt_images
-from portal.services.documents import build_claim_pdf, run_document_process, temporary_workspace
+from portal.services.documents import (
+    assemble_pdf,
+    build_claim_pdf,
+    inspect_upload,
+    temporary_workspace,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -83,7 +88,7 @@ def test_maximum_receipt_page_count_survives_confined_assembly(tmp_path):
             )
         )
         output = manifest.parent / "complete.pdf"
-        result = run_document_process("build", manifest, output)
+        result = assemble_pdf(manifest, output)
         assert result["pages"] == 101
         assert 0 < output.stat().st_size <= 10_000_000
         with pdfium.PdfDocument(output) as document:
@@ -104,7 +109,7 @@ def test_large_pdf_rasters_reach_final_compression_with_all_pages(tmp_path):
     assert source.stat().st_size < 10_000_000
     with temporary_workspace() as workspace:
         workspace = Path(workspace)
-        validated = run_document_process("validate", source, workspace)
+        validated = inspect_upload(source, workspace)
         assert validated["pages"] == 2
         manifest = workspace / "manifest.json"
         manifest.write_text(
@@ -121,7 +126,7 @@ def test_large_pdf_rasters_reach_final_compression_with_all_pages(tmp_path):
             )
         )
         output = workspace / "complete.pdf"
-        result = run_document_process("build", manifest, output)
+        result = assemble_pdf(manifest, output)
         rasters = list(workspace.glob("receipt-*.jpg"))
         assert len(rasters) == 2
         assert all(path.stat().st_size > 10_000_000 for path in rasters)

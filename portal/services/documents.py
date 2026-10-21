@@ -7,6 +7,8 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 from django.conf import settings
@@ -43,22 +45,102 @@ def resource_limits():
     resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
 
 
-def run_document_process(action, source, destination, *, kind="receipt"):
-    source, destination = Path(source).resolve(), Path(destination).resolve()
-    workspace = destination if action == "validate" else destination.parent
-    readonly = [str(source)]
-    if action == "build":
-        manifest = json.loads(source.read_text())
-        readonly += manifest["allowed_assets"] + [item["path"] for item in manifest["receipts"]]
-    arguments = [action, str(source), str(destination), "--kind", kind]
-    if settings.DOCUMENT_SANDBOX_ENABLED:
+def child_environment(workspace):
+    """Document children get no credentials or inherited configuration."""
+    return {
+        "PATH": os.defpath,
+        "LANG": "C.UTF-8",
+        "TMPDIR": str(workspace),
+        "XDG_CACHE_HOME": str(Path(workspace) / "cache"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+
+class SandboxedRunner:
+    """Production: Landlock/seccomp confinement before any parser is imported."""
+
+    def command(self, arguments, *, readonly, workspace):
         policy = workspace / "sandbox.json"
         policy.write_text(json.dumps({"readonly": readonly, "workspace": str(workspace)}))
-        command = [sys.executable, "-m", "portal.document_sandbox", str(policy), *arguments]
-    else:
-        if not settings.DEBUG:
-            raise ProcessingError("document_sandbox_unavailable")
-        command = [sys.executable, "-m", "portal.file_worker", *arguments]
+        return [sys.executable, "-m", "portal.document_sandbox", str(policy), *arguments]
+
+    def ready(self, root):
+        try:
+            return successful_sandbox_probe(root)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+
+class DirectRunner:
+    """Local development: the same worker and limits, without confinement."""
+
+    def command(self, arguments, *, readonly, workspace):
+        return [sys.executable, "-m", "portal.file_worker", *arguments]
+
+    def ready(self, root):
+        return True
+
+
+class UnavailableRunner:
+    def command(self, arguments, *, readonly, workspace):
+        raise ProcessingError("document_sandbox_unavailable")
+
+    def ready(self, root):
+        return False
+
+
+def configured_runner():
+    if settings.DOCUMENT_SANDBOX_ENABLED:
+        return SandboxedRunner()
+    return DirectRunner() if settings.DEBUG else UnavailableRunner()
+
+
+@lru_cache(maxsize=16)
+def successful_sandbox_probe(root):
+    # lru_cache retains successes only. Exceptions leave transient failures retryable.
+    Path(root).mkdir(exist_ok=True, mode=0o700)
+    with tempfile.TemporaryDirectory(dir=root, prefix="job-probe-") as workspace:
+        result = subprocess.run(
+            [sys.executable, "-m", "portal.document_sandbox", "--self-test", workspace],
+            cwd=settings.BASE_DIR,
+            env=child_environment(workspace),
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode != 0 or result.stdout.strip() != b"sandbox_ok":
+            raise OSError("Document sandbox probe failed")
+    return True
+
+
+def sandbox_ready():
+    return configured_runner().ready(str(workspace_root()))
+
+
+def inspect_upload(source, workspace, *, kind="receipt"):
+    """Validate a source file; images are normalized into the workspace."""
+    source, workspace = Path(source).resolve(), Path(workspace).resolve()
+    return execute(
+        ["validate", str(source), str(workspace), "--kind", kind],
+        readonly=[str(source)],
+        workspace=workspace,
+    )
+
+
+def assemble_pdf(manifest_path, output_path):
+    """Build the authoritative PDF next to its manifest from the listed inputs only."""
+    manifest_path, output_path = Path(manifest_path).resolve(), Path(output_path).resolve()
+    manifest = json.loads(manifest_path.read_text())
+    readonly = [str(manifest_path), *manifest["allowed_assets"]]
+    readonly += [item["path"] for item in manifest["receipts"]]
+    return execute(
+        ["build", str(manifest_path), str(output_path)],
+        readonly=readonly,
+        workspace=output_path.parent,
+    )
+
+
+def execute(arguments, *, readonly, workspace):
+    command = configured_runner().command(arguments, readonly=readonly, workspace=workspace)
     with (
         workspace_lock(workspace) as execution_lock,
         (workspace / "process-result.json").open("w+b") as output,
@@ -67,13 +149,7 @@ def run_document_process(action, source, destination, *, kind="receipt"):
             process = subprocess.Popen(
                 command,
                 cwd=settings.BASE_DIR,
-                env={
-                    "PATH": os.defpath,
-                    "LANG": "C.UTF-8",
-                    "TMPDIR": str(workspace),
-                    "XDG_CACHE_HOME": str(workspace / "cache"),
-                    "PYTHONDONTWRITEBYTECODE": "1",
-                },
+                env=child_environment(workspace),
                 stdout=output,
                 stderr=subprocess.DEVNULL,
                 preexec_fn=resource_limits,
@@ -107,7 +183,7 @@ def run_document_process(action, source, destination, *, kind="receipt"):
 def validate_upload(upload):
     source = path_for(upload.source_key)
     with temporary_workspace(upload=upload) as workspace:
-        result = run_document_process("validate", source, workspace, kind=upload.kind)
+        result = inspect_upload(source, workspace, kind=upload.kind)
         normalized = Path(result.pop("normalized")).resolve()
         if result.get("media_type") == "application/pdf" and normalized == source:
             result.update(normalized_key=upload.source_key, normalized_size=0)
@@ -161,7 +237,7 @@ def build_claim_pdf(claim, workspace):
     manifest_path = Path(workspace) / "manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     output_path = Path(workspace) / "complete.pdf"
-    result = run_document_process("build", manifest_path, output_path)
+    result = assemble_pdf(manifest_path, output_path)
     return output_path, result
 
 

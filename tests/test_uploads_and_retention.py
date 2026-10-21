@@ -1,4 +1,5 @@
 import io
+import socket
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -9,7 +10,6 @@ from PIL import Image
 
 from portal.jobs import run_one
 from portal.models import Job, Upload
-from portal.services.documents import ProcessingError
 from portal.services.retention import cleanup, purge_claim
 from portal.services.storage import path_for
 from tests.conftest import camera_jpeg_bytes, image_bytes
@@ -68,7 +68,11 @@ def test_camera_jpeg_with_auxiliary_picture_is_normalized(prepared, kind):
         assert green > red + 50  # Primary green picture, never the auxiliary red picture.
 
 
-def test_scanner_failure_keeps_file_pending(prepared, uploaded_file):
+def test_scanner_failure_keeps_file_pending(prepared, uploaded_file, settings):
+    settings.UPLOAD_SCANNER, settings.CLAMAV_HOST = "clamav", "127.0.0.1"
+    with socket.socket() as unused:
+        unused.bind(("127.0.0.1", 0))
+        settings.CLAMAV_PORT = unused.getsockname()[1]
     response = prepared["client"].post(
         "/forms/test/uploads/",
         {
@@ -79,8 +83,7 @@ def test_scanner_failure_keeps_file_pending(prepared, uploaded_file):
             "file": uploaded_file,
         },
     )
-    with patch("portal.jobs.scan_file", side_effect=ProcessingError("scanner_unavailable")):
-        run_one()
+    run_one()
     upload = Upload.objects.get(pk=response.json()["id"])
     assert upload.state == "pending"
     assert upload.error_code == "scanner_unavailable"

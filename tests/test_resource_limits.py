@@ -201,14 +201,14 @@ def test_stale_pdf_validator_does_not_delete_its_source(prepared, monkeypatch):
     response = upload_file(prepared, content=output.getvalue(), name="source.pdf")
     item = Upload.objects.get(pk=response.json()["id"])
     old = acquire_job()
-    from portal.services.documents import run_document_process
+    from portal.services.documents import inspect_upload
 
     def expire_after_processing(*args, **kwargs):
-        result = run_document_process(*args, **kwargs)
+        result = inspect_upload(*args, **kwargs)
         Job.objects.filter(pk=old.pk).update(lease_token=uuid.uuid4())
         return result
 
-    monkeypatch.setattr("portal.services.documents.run_document_process", expire_after_processing)
+    monkeypatch.setattr("portal.services.documents.inspect_upload", expire_after_processing)
     process_validation(old)
     assert path_for(item.source_key).is_file()
     assert not WorkspaceReservation.objects.exists()

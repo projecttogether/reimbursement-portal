@@ -17,7 +17,7 @@ from portal.services.documents import (
     validate_upload,
 )
 from portal.services.mailersend import send_pdf
-from portal.services.scanner import scan_file
+from portal.services.scanner import ScanError, scan_file
 from portal.services.storage import claim_pdf_key, path_for, publish_file, remove_keys
 
 logger = logging.getLogger(__name__)
@@ -221,11 +221,11 @@ def run_one():
             if live_job(job):
                 finish_job(job, "pending", "storage_capacity", 60)
         logger.warning("document_capacity_wait job=%s", job.pk)
-    except ProcessingError as exc:
+    except (ProcessingError, ScanError) as exc:
         code = str(exc)
         with transaction.atomic():
             if live_job(job):
-                retry = code == "scanner_unavailable" and job.attempts <= len(BACKOFF)
+                retry = getattr(exc, "retryable", False) and job.attempts <= len(BACKOFF)
                 finish_job(
                     job,
                     "pending" if retry else "failed",

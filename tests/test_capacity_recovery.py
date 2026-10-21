@@ -214,7 +214,7 @@ def sleeping_parser(command, **options):
  return process
 documents.subprocess.Popen = sleeping_parser
 with documents.workspace_lock(Path(sys.argv[2])):
- documents.run_document_process('validate', sys.argv[1], sys.argv[2])
+ documents.inspect_upload(sys.argv[1], sys.argv[2])
 """
     supervisor = subprocess.Popen(
         [sys.executable, "-c", code, str(source), str(directory), str(coordinator)],

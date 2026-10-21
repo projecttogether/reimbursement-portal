@@ -6,7 +6,7 @@ import pytest
 from django.utils import timezone
 
 from portal.models import Job
-from portal.services.readiness import sandbox_operational
+from portal.services.documents import SandboxedRunner
 
 pytestmark = pytest.mark.django_db
 
@@ -55,9 +55,10 @@ def test_failed_sandbox_probe_can_recover(tmp_path, monkeypatch, failure):
             )
         return SimpleNamespace(returncode=0, stdout=b"sandbox_ok\n")
 
-    monkeypatch.setattr("portal.services.readiness.subprocess.run", probe)
+    monkeypatch.setattr("portal.services.documents.subprocess.run", probe)
     root = str(tmp_path / "work")
-    assert sandbox_operational(root) is False
-    assert sandbox_operational(root) is True
-    assert sandbox_operational(root) is True
+    runner = SandboxedRunner()
+    assert runner.ready(root) is False
+    assert runner.ready(root) is True
+    assert runner.ready(root) is True
     assert len(calls) == 2
