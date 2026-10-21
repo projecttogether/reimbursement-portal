@@ -10,11 +10,10 @@
     provider_accepted: "Die E-Mail wurde vom Versanddienst angenommen.",
     delivered:
       "Deine PDF wurde an den Mailserver des Finance-Postfachs zugestellt.",
-    purged: "Die vorübergehend gespeicherten Antragsdaten wurden gelöscht.",
     paused: "Der Versand ist verzögert. Dein Antrag bleibt gespeichert.",
     send_unknown:
       "Der Versandstatus wird geprüft. Dein Antrag bleibt gespeichert; bitte reiche ihn nicht erneut ein.",
-    failed:
+    delivery_failed:
       "Beim Versand ist ein Problem aufgetreten. Bitte kontaktiere uns mit deiner Referenz.",
     processing_failed:
       "Bei der PDF-Erstellung ist ein Problem aufgetreten. Bitte kontaktiere uns mit deiner Referenz.",
@@ -35,12 +34,7 @@
       if (!response.ok) throw new Error("status_unavailable");
       const result = await response.json();
       show(result.state);
-      if (
-        ["delivered", "purged", "failed", "processing_failed"].includes(
-          result.state,
-        )
-      )
-        return;
+      if (result.final) return;
     } catch {
       target.textContent =
         "Der Status ist gerade nicht erreichbar. Dein Antrag bleibt gespeichert; bitte reiche ihn nicht erneut ein.";
@@ -57,5 +51,5 @@
         " Lade diese Seite später neu, um den aktuellen Status zu prüfen.";
     }
   }
-  setTimeout(refresh, 3000);
+  if (target.dataset.final !== "true") setTimeout(refresh, 3000);
 })();

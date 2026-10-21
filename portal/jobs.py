@@ -7,14 +7,13 @@ from django.conf import settings
 from django.db import connection, transaction
 from django.utils import timezone
 
-from portal.models import Claim, Delivery, DeliveryAttempt, Job, Upload
-from portal.services import uploads
+from portal.models import Claim, Job, Upload
+from portal.services import delivery, uploads
 from portal.services.capacity import CapacityError, temporary_workspace
-from portal.services.delivery import reconcile_unmatched, update_delivery
 from portal.services.documents import ProcessingError, build_claim_pdf, validate_upload
-from portal.services.mailersend import send_pdf
 from portal.services.scanner import ScanError, scan_file
 from portal.services.storage import claim_pdf_key, path_for, publish_file, remove_keys
+from portal.services.transport import FAILED, PENDING, UNKNOWN
 
 logger = logging.getLogger(__name__)
 BACKOFF = [60, 300, 900, 3600]
@@ -46,11 +45,7 @@ def reclaim_stale_jobs():
         state="running", lease_until__lt=timezone.now()
     ):
         if job.kind == "send":
-            delivery = Delivery.objects.select_for_update().get(pk=job.delivery_id)
-            delivery.attempts.filter(state="sending").update(
-                state="send_unknown", error_code="worker_interrupted"
-            )
-            update_delivery(delivery)
+            delivery.mark_interrupted(job.delivery_id, "worker_interrupted")
             job.state = "failed"
             job.error_code = "send_unknown"
         else:
@@ -133,12 +128,7 @@ def process_render(job):
             )
             claim.state, claim.error_code = Claim.State.READY, ""
             claim.save()
-            delivery, _ = Delivery.objects.get_or_create(
-                claim=claim, defaults={"recipient": claim.snapshot["recipient"]}
-            )
-            Job.objects.get_or_create(
-                key=f"send:{delivery.pk}", defaults={"kind": "send", "delivery": delivery}
-            )
+            delivery.schedule(claim)
             finish_job(job)
 
 
@@ -146,44 +136,27 @@ def process_send(job):
     with transaction.atomic():
         if not live_job(job):
             return
-        delivery = (
-            Delivery.objects.select_for_update().select_related("claim").get(pk=job.delivery_id)
-        )
-        if (
-            delivery.state in {"delivered", "provider_accepted", "paused", "send_unknown"}
-            or delivery.claim.state != Claim.State.READY
-        ):
+        attempt = delivery.start_attempt(job.delivery_id)
+        if not attempt:
             finish_job(job, "cancelled")
             return
-        attempt = DeliveryAttempt.objects.create(delivery=delivery)
-        delivery.state = "sending"
-        delivery.save()
-    result = send_pdf(attempt)
+    result = delivery.send(attempt)
     with transaction.atomic():
-        delivery = Delivery.objects.select_for_update().get(pk=delivery.pk)
-        current = DeliveryAttempt.objects.select_for_update().get(pk=attempt.pk)
-        if current.state not in {"delivered", "failed"}:
-            current.state, current.error_code = result.state, result.error_code
-        if result.message_id:
-            current.message_id = result.message_id
-        current.save()
-        update_delivery(delivery)
-        if result.state == "pending":
+        delivery.record_result(attempt.pk, result)
+        if result.state == PENDING:
             if job.attempts <= len(BACKOFF):
                 delay = max(result.retry_after, BACKOFF[job.attempts - 1]) + random.randint(0, 15)
                 finish_job(job, "pending", result.error_code, delay)
             else:
-                current.state, current.error_code = "failed", "retry_exhausted"
-                current.save()
-                update_delivery(delivery)
+                delivery.abandon(attempt.pk, "retry_exhausted")
                 finish_job(job, "failed", "retry_exhausted")
         else:
             finish_job(
                 job,
-                "failed" if result.state in {"failed", "send_unknown"} else "done",
+                "failed" if result.state in {FAILED, UNKNOWN} else "done",
                 result.error_code,
             )
-    reconcile_unmatched()
+    delivery.reconcile_unmatched()
 
 
 def run_one():
@@ -225,11 +198,7 @@ def run_one():
         with transaction.atomic():
             if live_job(job):
                 if job.delivery_id:
-                    delivery = Delivery.objects.select_for_update().get(pk=job.delivery_id)
-                    delivery.attempts.filter(state="sending").update(
-                        state="send_unknown", error_code="unexpected_send_failure"
-                    )
-                    update_delivery(delivery)
+                    delivery.mark_interrupted(job.delivery_id, "unexpected_send_failure")
                 if job.claim_id:
                     Claim.objects.filter(pk=job.claim_id).update(
                         state=Claim.State.FAILED, error_code="processing_error"

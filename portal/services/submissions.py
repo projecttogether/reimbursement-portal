@@ -12,6 +12,7 @@ from portal.forms import ClaimForm
 from portal.intake import EXPENSE_FIELD_LENGTHS, IntakeError, message, parse_amount
 from portal.models import Claim, Event, Expense, Job
 from portal.services import uploads
+from portal.services.delivery import recipient_approved
 from portal.services.drafts import authorize_draft, digest, ensure_accepting
 
 
@@ -88,7 +89,7 @@ def submit_claim(request, event_slug, data):
             )
         return draft.claim
     ensure_accepting(draft, event, form_version=data.get("config_version"))
-    if event.recipient.lower() not in settings.APPROVED_DELIVERY_RECIPIENTS:
+    if not recipient_approved(event.recipient):
         raise IntakeError("Das Formular ist derzeit nicht verfügbar.", status=503)
     payload, totals = normalized_payload(data, event)
     all_ids = [file_id for row in payload["expenses"] for file_id in row["uploads"]] + [

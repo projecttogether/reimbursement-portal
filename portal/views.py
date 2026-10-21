@@ -15,9 +15,8 @@ from portal import intake
 from portal.forms import ClaimForm
 from portal.intake import IntakeError
 from portal.models import Claim, Event
-from portal.services import uploads
+from portal.services import delivery, uploads
 from portal.services.capacity import storage_available
-from portal.services.delivery import ingest_event
 from portal.services.drafts import get_or_create_draft, session_hash
 from portal.services.mailersend import verify_webhook
 from portal.services.readiness import dependencies
@@ -158,12 +157,13 @@ def received(request, claim_id):
     claim = get_object_or_404(
         Claim, pk=claim_id, accepted_draft__session_hash=session_hash(request)
     )
-    delivery = getattr(claim, "delivery", None)
-    status = delivery.state if delivery else claim.state
+    status, final = delivery.participant_status(claim)
     if request.GET.get("format") == "json":
-        return JsonResponse({"reference": claim.reference, "state": status})
+        return JsonResponse({"reference": claim.reference, "state": status, "final": final})
     return render(
-        request, "portal/received.html", {"claim": claim, "status": status, "event": claim.event}
+        request,
+        "portal/received.html",
+        {"claim": claim, "status": status, "final": final, "event": claim.event},
     )
 
 
@@ -179,7 +179,7 @@ def mailersend_webhook(request):
         if not verify_webhook(raw, request.headers.get("Signature", ""), test=test):
             return JsonResponse({"error": "invalid_signature"}, status=401)
         if not test:
-            ingest_event(data)
+            delivery.ingest_event(data)
     except (ValueError, TypeError, AttributeError, KeyError):
         return JsonResponse({"error": "invalid_event"}, status=400)
     return JsonResponse({"received": True})

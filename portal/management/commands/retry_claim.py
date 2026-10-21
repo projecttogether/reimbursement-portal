@@ -4,7 +4,8 @@ import uuid
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from portal.models import Claim, Delivery, Job, Operation
+from portal.models import Claim, Job, Operation
+from portal.services import delivery
 
 
 class Command(BaseCommand):
@@ -29,16 +30,14 @@ class Command(BaseCommand):
             claim.save()
             Job.objects.create(key=f"render:{claim.pk}:{uuid.uuid4()}", kind="render", claim=claim)
         elif claim.state == Claim.State.READY:
-            delivery = Delivery.objects.select_for_update().get(claim=claim)
-            if delivery.state != "failed" and not options["acknowledge_duplicate_risk"]:
+            try:
+                delivery.retry(
+                    claim, acknowledge_duplicate_risk=options["acknowledge_duplicate_risk"]
+                )
+            except delivery.DuplicateRisk as exc:
                 raise CommandError(
                     "Check provider activity first. Use --acknowledge-duplicate-risk for an intentional resend."
-                )
-            delivery.state, delivery.error_code = "pending", ""
-            delivery.save()
-            Job.objects.create(
-                key=f"send:{delivery.pk}:{uuid.uuid4()}", kind="send", delivery=delivery
-            )
+                ) from exc
         else:
             raise CommandError("This claim cannot be retried in its current state.")
         Operation.objects.create(

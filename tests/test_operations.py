@@ -135,9 +135,7 @@ def test_reconciliation_rotates_past_stuck_records(accepted, monkeypatch):
             ]
         }
 
-    monkeypatch.setattr(
-        "portal.management.commands.reconcile_deliveries.retrieve_message", retrieve
-    )
+    monkeypatch.setattr("portal.services.mailersend.retrieve_message", retrieve)
     for _ in range(3):
         call_command("reconcile_deliveries", batch_size=50, stdout=io.StringIO())
     assert "message-100" in seen
@@ -151,9 +149,7 @@ def test_reconciliation_failure_is_visible_and_does_not_pin_batch(accepted, monk
     delivery = Delivery.objects.create(claim=accepted, recipient="finance@example.invalid")
     first = DeliveryAttempt.objects.create(delivery=delivery, state="paused", message_id="first")
     second = DeliveryAttempt.objects.create(delivery=delivery, state="paused", message_id="second")
-    monkeypatch.setattr(
-        "portal.management.commands.reconcile_deliveries.retrieve_message", lambda value: None
-    )
+    monkeypatch.setattr("portal.services.mailersend.retrieve_message", lambda value: None)
     output = io.StringIO()
     with pytest.raises(CommandError, match="Provider lookup failed"):
         call_command("reconcile_deliveries", batch_size=1, stdout=output)
