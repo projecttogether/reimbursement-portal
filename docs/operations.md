@@ -2,18 +2,14 @@
 
 ## Configure and launch
 
-For multiple cost centers/domains, follow [Coolify deployment](coolify.md).
-Deploy the shared backend once and a separate web resource per domain. Each web
-resource uses `EVENT_*` environment variables and synchronizes its event on startup;
-no event JSON or terminal configuration is needed. PostgreSQL, files, ClamAV,
-the single worker, and one MailerSend webhook are shared on the same Docker host.
-PostgreSQL runs as a separate Coolify database resource. Both application Compose
-definitions use its complete internal URL and join its Coolify destination network
-with Connect To Predefined Network.
+Follow [Coolify deployment](coolify.md). The application is one Coolify resource
+(web, worker, ClamAV, migrations) on one domain; PostgreSQL is a separate Coolify
+database resource reached through Connect To Predefined Network. Forms, templates
+and the privacy notice are managed in the admin area at `/admin/`, which signs in
+through PT Login (Keycloak) and grants roles from the `groups` claim.
 
 Use the selected PT application's existing Coolify/TLS proxy. Expose only the web
-and dedicated webhook HTTP services. Do not publish PostgreSQL, ClamAV, worker,
-or storage ports. Keep the Compose host port on loopback, or remove the port
+HTTP service. Do not publish PostgreSQL, ClamAV, worker, or storage ports. Keep the Compose host port on loopback, or remove the port
 mapping when Coolify routes
 directly to the container. Do not add a second reverse proxy.
 
@@ -26,29 +22,22 @@ proxy replaces forwarded protocol headers. Configure:
   `MAIL_REPLY_TO_ADDRESS`, `MAILERSEND_API_TOKEN`, and
   `MAILERSEND_WEBHOOK_SIGNING_SECRET`.
 - `APPROVED_DELIVERY_RECIPIENTS`, comma-separated approved Moss/Finance inboxes.
+  Admins choose a form's recipient from this list.
+- `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` of the PT Login client, and optionally
+  `KEYCLOAK_ADMIN_GROUP` / `KEYCLOAK_EDITOR_GROUP` for other group paths.
 - `UPLOAD_SCANNER=clamav`, its private host/port, and `HEALTHCHECK_TOKEN`.
 - Persistent encrypted database/private storage volumes and an independent,
   encrypted off-host backup destination. Backup keys remain outside Git.
 
-For the original combined deployment, create an event JSON from
-`examples/event.json`, fill its KST/KTR, approved recipient, Finance contact,
-privacy notice/version, dates/deadline, and set
-`active=true`. Do not use placeholder text or the demo notice with real data.
+Every saved change to a form, its template or the privacy notice increments the
+form's revision. Unsubmitted forms from an older revision must reload and review
+again; accepted claims keep their original configuration snapshot. Stop web and
+worker before migrations, then replace both with the new image. Old workers must
+not create reservations during this upgrade.
 
-```bash
-docker compose stop web worker
-docker compose run --rm web python manage.py migrate
-docker compose run --rm -v /approved/event.json:/tmp/event.json:ro web \
-  python manage.py configure_event /tmp/event.json
-docker compose up -d web worker
-```
-
-Configuration changes increment the event revision; unchanged restarts do not.
-Unsubmitted forms from an older revision must reload and review again; accepted
-claims keep their original
-configuration snapshot. Stop every web resource and the shared worker before
-migrations, then replace all with the new image. Old workers must not create
-reservations during this upgrade.
+Locally, without Keycloak, create an admin with `python manage.py createsuperuser`
+and sign in with a password; `python manage.py seed_demo` creates the form
+`/f/demo/`. Password sign-in exists only in development mode.
 Only one worker process is supported operationally; its queue uses row locks and
 leases and acquires ready jobs in FIFO order across validation, rendering and
 sending. Later uploads cannot indefinitely overtake accepted claims.
@@ -112,8 +101,9 @@ delivery, and recipient-server delivery is not proof of completed Moss processin
 The merged PDF is the authoritative document in the established Finance workflow.
 Finance must accept the selected handoff/deletion policy before setting
 `CONTENT_PURGE_ENABLED=1`. It defaults to `0`; abandoned uploads and orphan
-temporary files are still cleaned. Set `SUCCESS_RETENTION_DAYS` to the approved
-period, initially proposed as seven days. An already started purge always resumes.
+temporary files are still cleaned. `PDF_RETENTION_DAYS` (7) and
+`CONTENT_RETENTION_DAYS` (30) are the periods the privacy notice states; change
+both together with the notice. An already started purge always resumes.
 
 Run a complete dummy claim through the approved MailerSend/Moss route before
 launch. Check all pages, KST/KTR, declaration, signature, amounts, and compressed
@@ -125,7 +115,10 @@ an approved private process.
 
 ## Recovery commands
 
-Commands run through existing authorized host access. There is no staff web login.
+Template admins can retry a claim in the admin area (Anträge > Erneut verarbeiten);
+it records their PT Login address and reason. Form editors see the claims of their
+forms, with name, email, total and status, but no banking or receipt data. The
+commands below run through authorized host access and record the host actor.
 Use operational reasons without participant names, account details, or receipt text.
 
 ```bash
@@ -142,12 +135,11 @@ python manage.py purge_expired --execute
 ```
 
 `retry_claim` records the host actor and reason. It retries failed renders only
-before a PDF has become ready. Delivery retries reuse the existing immutable PDF
+before a PDF has become ready, and cannot resend once the PDF has been deleted. Delivery retries reuse the existing immutable PDF
 and destination. An ambiguous send, paused/accepted send, or intentional resend
 requires explicit duplicate-risk acknowledgment. A new claim is required for
 changed participant data; Finance handles replacement and late-submission policy.
-If a closed event needs another claim, coordinate its reopening through versioned
-configuration. The MVP has no automatic replacement or payment cancellation.
+If a closed form needs another claim, reopen it in the admin area. The MVP has no automatic replacement or payment cancellation.
 
 An interrupted send or a timeout after transmission can mean MailerSend accepted
 the message. These cases become `send_unknown` and do not auto-retry. Inspect
@@ -201,11 +193,11 @@ failures. Use the independent PT monitoring channel, so a MailerSend outage cann
 suppress its own alert. `claim_status` emits redacted operational state for this.
 Name the technical owner and Finance contact before launch.
 
-Drafts expire after 24 hours. The proposed successful-claim retention is seven
-days after recipient-server delivery. Failed/ambiguous claims have a 30-day
-resolution target and remain retained if unresolved; logs report approaching and
-overdue cases. The owner must resolve them or record an approved extension. These
-periods need Finance/Legal approval and are not legal retention determinations.
+Drafts expire after 24 hours. After recipient-server delivery, the PDF and local
+email copies are deleted after seven days; all other content of the claim 30 days
+after submission. Failed/ambiguous claims have a 30-day resolution target and
+remain retained if unresolved; the admin area marks overdue claims and logs report
+approaching ones. The owner must resolve them or record an approved extension.
 After content purge, minimal reference/time/status records expire after 30 days.
 MailerSend and Moss copies follow their separately approved retention policies.
 

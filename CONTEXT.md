@@ -5,24 +5,42 @@ that owns each concept. Keep it current when a concept gains or changes a home.
 
 ## Glossary
 
-**Event**: a configured reimbursement occasion (KST/KTR, approved Finance recipient,
-privacy notice, deadline). Every change increments its configuration revision.
+**Template** (Vorlage): a type of form (`FormTemplate`). It sets the intro text,
+declaration, travel mode (off/optional/required) and whether mileage is allowed at
+which rate. Its **template fields** define the internal values every form of the
+template sets, such as KST, KTR or an ID; participants never see them, the PDF does.
+
+**Form** (Formular): a published reimbursement form at `/f/<slug>/`, created from a
+template by its owners. It holds the internal values, purpose options, instructions,
+recipient, contact, opening times and its configuration revision. Saving the form,
+its template or a new privacy notice increments the revision.
+
+**Privacy notice**: the one app-wide, versioned text. A change is a new version;
+claims record the version they acknowledged.
+
+**Admin roles** (`portal/roles.py`): *template admins* and *form editors*, granted at
+every PT Login sign-in from the Keycloak `groups` claim (`portal/auth.py`).
 
 **Draft**: one participant's unsubmitted form, bound to a browser session and a secret
-token. A draft is *accepting* while it is unsubmitted, its event is open, and its
-revision matches the event's (`services/drafts.py`).
+token. A draft is *accepting* while it is unsubmitted, its form is open, and its
+revision matches the form's (`services/drafts.py`).
 
 **Claim**: the immutable record created when a draft is accepted. Its states are
 `received → rendering → ready`, or `processing_failed`, then `purging → purged`.
+After delivery its PDF is removed at `pdf_due` (7 days) and all content at
+`retention_due` (30 days after submission) (`services/retention.py`).
 
-**Expense**: one row of a claim (merchant, purpose, reference, amount, currency).
+**Expense**: one row of a claim, in EUR. A *receipt* row has merchant, purpose,
+optional reference, amount and one to three receipts. A *mileage* row has date,
+route, one-way distance and return trip; its amount is distance × the template's
+rate, calculated on the server, and proofs are optional.
 
 **Upload**: a receipt (attached to an expense) or a signature. Uploads are `pending`
 until scanned and normalized, then `ready` or `failed`. An upload is *busy* while its
 validation runs or an execution workspace holds it (`services/uploads.py`).
 
-**Intake limits**: the file counts, sizes, page limits, amount format, currency
-precision and participant messages that the form, its script and server validation
+**Intake limits**: the file counts, sizes, page limits, amount and distance formats
+and participant messages that the form, its script and server validation
 share (`portal/intake.py`). An **IntakeError** is a participant-facing rejection.
 
 **Authoritative PDF**: the single generated document (summary, signature, every receipt
@@ -38,6 +56,9 @@ MailerSend). Outcomes: `provider_accepted`, `paused`, `delivered`, `failed`, or
 
 **Delivery evidence**: a signed webhook event or a reconciliation lookup that updates
 an attempt. Evidence never sends anything.
+
+**Operator action**: an audited retry from the admin area or `retry_claim`
+(`services/operations.py`).
 
 **Duplicate risk**: an operator resend of a delivery that is not definitely `failed`.
 It requires explicit acknowledgment.
