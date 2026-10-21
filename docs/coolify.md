@@ -163,10 +163,16 @@ Use Coolify's multiline editor for privacy notices with paragraphs.
 Web resources do not require MailerSend API or webhook secrets. All sending uses
 the shared worker's sender, reply-to address, token, and retention configuration.
 
-Visit the domain root to reach that event. The web resource rejects other event
-slugs on forms, uploads, submissions, and claim-status pages, even if a valid
-session from another domain is replayed. Shared webhook/worker roles cannot serve
-intake pages; web resources do not expose the MailerSend webhook.
+The domain root displays its configured form directly, without a slug in the
+browser URL. Existing `/forms/<EVENT_SLUG>/` links redirect to the root and preserve
+query parameters such as `?new=1`. Keep `EVENT_SLUG` as the stable internal event
+identifier. `EVENT_ACTIVE=0` displays the closed-form page; set it to `1` and
+redeploy to open intake, within any configured opening/closing times.
+
+The web resource rejects other event slugs on forms, uploads, submissions, and
+claim-status pages, even if a valid session from another domain is replayed.
+Shared webhook/worker roles cannot serve intake pages; web resources do not expose
+the MailerSend webhook.
 
 Duplicate this web resource for another cost center, changing its domain, origin,
 event slug and event settings. Do not duplicate the backend. Keep aggregate limits

@@ -40,7 +40,7 @@ def api_errors(view):
 @require_GET
 def index(request):
     if settings.PORTAL_ROLE == "web":
-        return redirect("event_form", event_slug=settings.EVENT_SLUG)
+        return event_form(request, event_slug=settings.EVENT_SLUG)
     events = [event for event in Event.objects.filter(active=True) if event.is_open()]
     if len(events) == 1:
         return redirect("event_form", event_slug=events[0].slug)
@@ -50,6 +50,10 @@ def index(request):
 @require_GET
 @ensure_csrf_cookie
 def event_form(request, event_slug):
+    if settings.PORTAL_ROLE == "web" and request.path_info != "/":
+        url = reverse("index")
+        query = request.META.get("QUERY_STRING", "")
+        return redirect(f"{url}?{query}" if query else url)
     event = get_object_or_404(Event, slug=event_slug)
     if not event.is_open():
         return render(request, "portal/closed.html", {"event": event}, status=403)
