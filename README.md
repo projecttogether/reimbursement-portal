@@ -21,14 +21,17 @@ locally. ClamAV's first startup can take several minutes.
 
 ## Deploy with Coolify
 
-Deploy one shared backend using `compose.coolify.yaml` and `.env.coolify.example`.
-It owns PostgreSQL, ClamAV, the single worker, migrations, and the MailerSend
-webhook. Deploy a separate web resource per domain using `compose.coolify.web.yaml`
-and `.env.coolify.web.example`, with each cost center configured through `EVENT_*`
-environment variables. Web startup creates or updates its event automatically.
+Start one separate PostgreSQL resource in Coolify, then deploy the shared backend
+using `compose.coolify.yaml` and `.env.coolify.example`. The backend owns ClamAV,
+the single worker, migrations, and the MailerSend webhook. Deploy a separate web
+resource per domain using `compose.coolify.web.yaml` and `.env.coolify.web.example`,
+with each cost center configured through `EVENT_*` environment variables. Web
+startup creates or updates its event automatically.
 
-All resources share one database, private storage volume, and Docker network on
-the same host. Each domain serves only its configured event. The backend's single
+All application resources share the database's complete internal connection URL
+and join its Coolify destination network with Connect To Predefined Network.
+They also share one private storage volume and application network on the same
+host. Each domain serves only its configured event. The backend's single
 signed MailerSend webhook updates deliveries across all events.
 
 Follow the [Coolify deployment steps](docs/coolify.md). For upgrades, stop all web

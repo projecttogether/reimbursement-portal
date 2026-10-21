@@ -7,6 +7,9 @@ Deploy the shared backend once and a separate web resource per domain. Each web
 resource uses `EVENT_*` environment variables and synchronizes its event on startup;
 no event JSON or terminal configuration is needed. PostgreSQL, files, ClamAV,
 the single worker, and one MailerSend webhook are shared on the same Docker host.
+PostgreSQL runs as a separate Coolify database resource. Both application Compose
+definitions use its complete internal URL and join its Coolify destination network
+with Connect To Predefined Network.
 
 Use the selected PT application's existing Coolify/TLS proxy. Expose only the web
 and dedicated webhook HTTP services. Do not publish PostgreSQL, ClamAV, worker,

@@ -1,5 +1,7 @@
 # Shared backend. Deploy once, then use compose.coolify.web.yaml per domain.
 # Create the external shared network and private volume on the Docker host first.
+# PostgreSQL is a separate Coolify resource; start it before deploying this stack.
+# Enable Connect To Predefined Network to reach its internal DATABASE_URL.
 x-application: &application
   build:
     context: .
@@ -13,7 +15,7 @@ x-application: &application
     DEPLOYMENT_ENV: ${DEPLOYMENT_ENV:-production}
     DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set a random secret of at least 50 characters}
     ALLOWED_HOSTS: ${ALLOWED_HOSTS:?Include the public hostname and 127.0.0.1}
-    DATABASE_URL: ${DATABASE_URL:?Set the shared PostgreSQL URL}
+    DATABASE_URL: ${DATABASE_URL:?Use the separate PostgreSQL resource internal URL}
     PRIVATE_STORAGE_ROOT: /app/var/private
     TRUST_PROXY_HEADERS: "1"
     TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:?Set the networks used by the trusted reverse proxy}
@@ -51,8 +53,6 @@ x-application: &application
     - shared
 
 x-dependencies: &dependencies
-  database:
-    condition: service_healthy
   scanner:
     condition: service_healthy
   migrate:
@@ -66,9 +66,6 @@ services:
     command: ["python", "manage.py", "migrate", "--noinput"]
     restart: "no"
     exclude_from_hc: true
-    depends_on:
-      database:
-        condition: service_healthy
 
   webhook:
     <<: *application
@@ -98,26 +95,6 @@ services:
       timeout: 5s
       retries: 3
 
-  database:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_DB: reimbursement
-      POSTGRES_USER: reimbursement
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Use a random hexadecimal password}
-    volumes:
-      - database_data:/var/lib/postgresql/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U reimbursement -d reimbursement"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    mem_limit: 512m
-    networks:
-      shared:
-        aliases:
-          - pt-reimbursement-database
-
   scanner:
     image: clamav/clamav:1.4
     volumes:
@@ -139,7 +116,6 @@ volumes:
   private_data:
     external: true
     name: ${PRIVATE_DATA_VOLUME:-pt-reimbursement-private}
-  database_data:
   scanner_data:
 
 networks:
