@@ -53,9 +53,10 @@ off-host production backup, retention and key custody still need deployment evid
 | Two 250-participant bursts, each with a 10-second worker pause | 250/250 completions and zero failures in each run; p95 totals 499.862 s and 524.520 s |
 | Second-run worker cgroup | 140.5 MiB peak memory under the 2 GB limit; zero OOM events |
 | Second-run storage and isolated restore | 1,750 files verified; 250 claims restored and purged; zero integrity/deletion failures |
-| Final PostgreSQL CI | 138 tests passed; lint, formatting, schema drift, production startup checks and runtime image build passed |
+| Final PostgreSQL CI | 140 tests passed; lint, formatting, schema drift, production startup checks and runtime image build passed |
 | Browser checks | Desktop/mobile completion, visible IBAN/date errors, transient polling, repeated signature replacement and obsolete-signature rejection passed |
 | Maximum document | Confined assembly retained all 100 receipt pages plus the summary within the 10 MB cap |
+| High-detail PDF | Two temporary page JPEGs above 10 MB reached compression; all receipt pages and the summary fit below 1 MB, with the aggregate raster budget enforced |
 
 The burst used Linux `7.0.0-38-generic`, x86_64, with image
 `sha256:10318adc051d42b8d437d4a3a21ed4bc917a4b32885bcf2da3b2f453c9003f20`.

@@ -18,6 +18,7 @@ from portal.constants import MAX_IMAGE_PIXELS, MAX_NORMALIZED_FILE_BYTES, MAX_RE
 
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 warnings.simplefilter("error", Image.DecompressionBombWarning)
+MAX_RECEIPT_RASTER_BYTES = 512_000_000
 BLOCKED_PDF_KEYS = {
     "/JS",
     "/JavaScript",
@@ -37,14 +38,18 @@ class DocumentError(Exception):
 
 
 class BoundedBuffer(io.BytesIO):
+    def __init__(self, limit, error_code):
+        super().__init__()
+        self.limit, self.error_code = limit, error_code
+
     def write(self, data):
-        if self.tell() + len(data) > MAX_NORMALIZED_FILE_BYTES:
-            raise DocumentError("normalized_size_limit")
+        if self.tell() + len(data) > self.limit:
+            raise DocumentError(self.error_code)
         return super().write(data)
 
 
-def jpeg_bytes(image, quality):
-    output = BoundedBuffer()
+def jpeg_bytes(image, quality, *, limit, error_code):
+    output = BoundedBuffer(limit, error_code)
     image.save(output, "JPEG", quality=quality, optimize=True)
     return output.getvalue()
 
@@ -129,12 +134,15 @@ def validate_file(source, destination, kind):
     normalized = destination / ("normalized.png" if kind == "signature" else "normalized.jpg")
     temporary = normalized.with_suffix(".tmp")
     try:
-        output = BoundedBuffer()
         if kind == "signature":
+            output = BoundedBuffer(MAX_NORMALIZED_FILE_BYTES, "normalized_size_limit")
             image.save(output, "PNG", optimize=True)
+            content = output.getvalue()
         else:
-            output.write(jpeg_bytes(image, 94))
-        temporary.write_bytes(output.getvalue())
+            content = jpeg_bytes(
+                image, 94, limit=MAX_NORMALIZED_FILE_BYTES, error_code="normalized_size_limit"
+            )
+        temporary.write_bytes(content)
     finally:
         image.close()
     with temporary.open("rb") as output:
@@ -160,19 +168,22 @@ def receipt_images(receipts, workspace):
                     bitmap = page.render(scale=scale, may_draw_forms=True, draw_annots=True)
                     image = bitmap.to_pil().convert("RGB")
                     target = workspace / f"receipt-{len(images)}.jpg"
-                    content = jpeg_bytes(image, 95)
-                    if disk_bytes + len(content) > 512_000_000:
-                        raise DocumentError("workspace_limit")
-                    target.write_bytes(content)
-                    image.close()
-                    bitmap.close()
-                    page.close()
+                    try:
+                        content = jpeg_bytes(
+                            image,
+                            95,
+                            limit=MAX_RECEIPT_RASTER_BYTES - disk_bytes,
+                            error_code="workspace_limit",
+                        )
+                        target.write_bytes(content)
+                    finally:
+                        image.close()
+                        bitmap.close()
+                        page.close()
                     disk_bytes += target.stat().st_size
                     images.append((target, receipt["label"]))
         else:
             images.append((path, receipt["label"]))
-        if disk_bytes > 512_000_000:
-            raise DocumentError("workspace_limit")
     return images
 
 

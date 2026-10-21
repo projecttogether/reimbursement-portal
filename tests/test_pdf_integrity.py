@@ -1,4 +1,5 @@
 import json
+import random
 from pathlib import Path
 
 import pypdfium2 as pdfium
@@ -6,7 +7,7 @@ import pytest
 from PIL import Image
 from pypdf import PdfWriter
 
-from portal.file_worker import build_pdf
+from portal.file_worker import DocumentError, build_pdf, receipt_images
 from portal.services.documents import build_claim_pdf, run_document_process, temporary_workspace
 
 pytestmark = pytest.mark.django_db
@@ -87,3 +88,68 @@ def test_maximum_receipt_page_count_survives_confined_assembly(tmp_path):
         assert 0 < output.stat().st_size <= 10_000_000
         with pdfium.PdfDocument(output) as document:
             assert len(document) == 101
+
+
+def test_large_pdf_rasters_reach_final_compression_with_all_pages(tmp_path):
+    source = tmp_path / "detail.pdf"
+    pages = [
+        Image.frombytes("1", (3000, 4000), random.Random(seed).randbytes(1_500_000))
+        for seed in [42, 43]
+    ]
+    try:
+        pages[0].save(source, "PDF", resolution=160, save_all=True, append_images=pages[1:])
+    finally:
+        for page in pages:
+            page.close()
+    assert source.stat().st_size < 10_000_000
+    with temporary_workspace() as workspace:
+        workspace = Path(workspace)
+        validated = run_document_process("validate", source, workspace)
+        assert validated["pages"] == 2
+        manifest = workspace / "manifest.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "html": "<h1>Synthetic high-detail claim</h1>",
+                    "allowed_assets": [],
+                    "receipts": [
+                        {"path": str(source), "media_type": "application/pdf", "label": "Detail"}
+                    ],
+                    "reference": "synthetic",
+                    "max_bytes": 1_000_000,
+                }
+            )
+        )
+        output = workspace / "complete.pdf"
+        result = run_document_process("build", manifest, output)
+        rasters = list(workspace.glob("receipt-*.jpg"))
+        assert len(rasters) == 2
+        assert all(path.stat().st_size > 10_000_000 for path in rasters)
+        assert result["size"] <= 1_000_000
+        assert result["pages"] == 3
+        with pdfium.PdfDocument(output) as document:
+            assert len(document) == 3
+
+
+def test_raster_budget_limits_cumulative_temporary_jpegs(tmp_path, monkeypatch):
+    source = tmp_path / "two-pages.pdf"
+    image = Image.new("RGB", (600, 800), "#cee8ff")
+    try:
+        image.save(source, "PDF", save_all=True, append_images=[image])
+    finally:
+        image.close()
+    receipts = [{"path": str(source), "media_type": "application/pdf", "label": "Synthetic"}]
+    baseline = tmp_path / "baseline"
+    baseline.mkdir()
+    images = receipt_images(receipts, baseline)
+    assert len(images) == 2
+    sizes = {path.stat().st_size for path, _ in images}
+    assert len(sizes) == 1
+    limit = sizes.pop() * 3 // 2
+    monkeypatch.setattr("portal.file_worker.MAX_RECEIPT_RASTER_BYTES", limit)
+    bounded = tmp_path / "bounded"
+    bounded.mkdir()
+    with pytest.raises(DocumentError, match="workspace_limit"):
+        receipt_images(receipts, bounded)
+    assert len(list(bounded.glob("receipt-*.jpg"))) == 1
+    assert sum(path.stat().st_size for path in bounded.iterdir()) <= limit
