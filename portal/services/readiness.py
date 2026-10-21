@@ -14,10 +14,11 @@ from django.db.models import Q
 from django.utils import timezone
 
 from portal.models import Job
+from portal.services.storage import heartbeat_age, workspace_root
 
 
 def bounded_workspace():
-    root = (settings.PRIVATE_STORAGE_ROOT / "work").resolve()
+    root = workspace_root().resolve()
     if not root.is_dir():
         return False
     try:
@@ -80,19 +81,13 @@ def queue_age_seconds():
 def dependencies():
     result = {
         "sandbox": not settings.DOCUMENT_SANDBOX_ENABLED
-        or sandbox_operational(str(settings.PRIVATE_STORAGE_ROOT / "work"))
+        or sandbox_operational(str(workspace_root()))
     }
     if not settings.DEBUG:
         result["workspace"] = bounded_workspace()
     if settings.REQUIRE_WORKER_HEARTBEAT:
-        try:
-            age = (
-                timezone.now().timestamp()
-                - (settings.PRIVATE_STORAGE_ROOT / "worker-heartbeat").stat().st_mtime
-            )
-            result["worker"] = 0 <= age < settings.JOB_LEASE_SECONDS + 60
-        except OSError:
-            result["worker"] = False
+        age = heartbeat_age()
+        result["worker"] = age is not None and 0 <= age < settings.JOB_LEASE_SECONDS + 60
     if settings.UPLOAD_SCANNER == "clamav":
         try:
             with socket.create_connection(

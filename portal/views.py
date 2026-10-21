@@ -19,7 +19,13 @@ from portal.services.capacity import CapacityError, admit_upload
 from portal.services.delivery import ingest_event
 from portal.services.mailersend import verify_webhook
 from portal.services.readiness import dependencies
-from portal.services.storage import path_for, remove_keys, save_upload, storage_available
+from portal.services.storage import (
+    check_writable,
+    remove_keys,
+    save_upload,
+    storage_available,
+    upload_source_key,
+)
 from portal.services.submissions import (
     SubmissionError,
     authorize_draft,
@@ -180,7 +186,7 @@ def upload(request, event_slug):
                     ),
                     status=429 if str(exc) in {"draft_work_limit", "network_work_limit"} else 503,
                 ) from exc
-            key = f"uploads/{upload_id}/source{extension}"
+            key = upload_source_key(upload_id, extension)
             try:
                 size, checksum = save_upload(
                     file,
@@ -349,10 +355,7 @@ def readyz(request):
             cursor.execute("SELECT 1")
         if not storage_available():
             raise OSError
-        probe = path_for(f"checks/{uuid.uuid4()}")
-        probe.parent.mkdir(exist_ok=True, mode=0o700)
-        probe.write_bytes(b"ready")
-        probe.unlink()
+        check_writable()
         checks, age = dependencies()
         if not all(checks.values()):
             return JsonResponse(

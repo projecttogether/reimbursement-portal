@@ -7,7 +7,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import uuid
 from pathlib import Path
 
 from django.conf import settings
@@ -22,7 +21,13 @@ from portal.services.capacity import (
     total,
     workspace_uses_private_storage,
 )
-from portal.services.storage import path_for, publish_file
+from portal.services.storage import (
+    new_workspace_key,
+    normalized_upload_key,
+    path_for,
+    publish_file,
+    workspace_root,
+)
 
 
 class ProcessingError(Exception):
@@ -115,9 +120,7 @@ def validate_upload(upload):
         size = normalized.stat().st_size
         if not 0 < size <= settings.MAX_NORMALIZED_FILE_BYTES:
             raise ProcessingError("normalized_size_limit")
-        # Every execution gets an immutable key. A stale lease cannot replace or
-        # delete the output published by another validation execution.
-        key = f"uploads/{upload.pk}/{uuid.uuid4()}{suffix}"
+        key = normalized_upload_key(upload.pk, suffix)
         publish_file(normalized, key, settings.MAX_NORMALIZED_FILE_BYTES)
         result.update(normalized_key=key, normalized_size=size)
         yield result
@@ -207,9 +210,9 @@ def remove_abandoned_workspace(reservation):
 
 @contextlib.contextmanager
 def temporary_workspace(*, upload=None, claim=None):
-    root = settings.PRIVATE_STORAGE_ROOT / "work"
+    root = workspace_root()
     root.mkdir(exist_ok=True, mode=0o700)
-    key = f"work/job-{uuid.uuid4()}"
+    key = new_workspace_key()
     directory = path_for(key)
     size = settings.MAX_NORMALIZED_FILE_BYTES if upload else settings.MAX_RENDER_WORKSPACE_BYTES
     output_size = settings.MAX_NORMALIZED_FILE_BYTES if upload else settings.MAX_FINAL_PDF_BYTES

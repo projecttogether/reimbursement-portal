@@ -1,5 +1,4 @@
 import logging
-import shutil
 from datetime import timedelta
 
 from django.conf import settings
@@ -17,7 +16,7 @@ from portal.models import (
     WorkspaceReservation,
 )
 from portal.services.documents import ProcessingError, remove_abandoned_workspace
-from portal.services.storage import remove_keys
+from portal.services.storage import outbox_key, remove_keys, sweep_orphans
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +43,7 @@ def purge_claim(claim_id):
     delivery = getattr(claim, "delivery", None)
     if delivery:
         for attempt in delivery.attempts.all():
-            remove_keys(f"outbox/{attempt.id}.eml")
+            remove_keys(outbox_key(attempt.id))
     with transaction.atomic():
         claim = Claim.objects.select_for_update().get(pk=claim_id)
         if delivery:
@@ -158,46 +157,23 @@ def cleanup(*, execute=False):
     return result
 
 
+class StoredOwners:
+    """Database ownership of stored artifacts, for the storage orphan sweep."""
+
+    def upload_keys(self, upload_id):
+        upload = Upload.objects.filter(pk=upload_id).first()
+        return {upload.source_key, upload.normalized_key} if upload else None
+
+    def workspace_reserved(self, key):
+        return WorkspaceReservation.objects.filter(directory=key).exists()
+
+    def pdf_referenced(self, key):
+        return Claim.objects.filter(pdf_key=key).exists()
+
+
 def orphan_cleanup():
-    cutoff = (timezone.now() - timedelta(hours=24)).timestamp()
-    root = settings.PRIVATE_STORAGE_ROOT
     for reservation in WorkspaceReservation.objects.filter(
         created_at__lt=timezone.now() - timedelta(seconds=settings.JOB_LEASE_SECONDS)
     ):
         remove_abandoned_workspace(reservation)
-    for directory in (root / "uploads").glob("*"):
-        if directory.is_dir() and directory.stat().st_mtime < cutoff:
-            try:
-                exists = Upload.objects.filter(pk=directory.name).exists()
-            except (ValueError, TypeError):
-                continue
-            if not exists:
-                shutil.rmtree(directory)
-            else:
-                upload = Upload.objects.get(pk=directory.name)
-                retained = {upload.source_key, upload.normalized_key}
-                for file in directory.iterdir():
-                    if (
-                        file.is_file()
-                        and file.stat().st_mtime < cutoff
-                        and str(file.relative_to(root)) not in retained
-                    ):
-                        file.unlink()
-    for directory in (root / "work").glob("job-*"):
-        if (
-            directory.is_dir()
-            and directory.stat().st_mtime < cutoff
-            and not WorkspaceReservation.objects.filter(
-                directory=str(directory.relative_to(root))
-            ).exists()
-        ):
-            shutil.rmtree(directory)
-    for file in (root / "pdf").glob("*/*.pdf"):
-        if (
-            file.stat().st_mtime < cutoff
-            and not Claim.objects.filter(pdf_key=str(file.relative_to(root))).exists()
-        ):
-            file.unlink()
-    for file in (root / "incoming").glob("*"):
-        if file.is_file() and file.stat().st_mtime < cutoff:
-            file.unlink()
+    sweep_orphans(timezone.now() - timedelta(hours=24), StoredOwners())

@@ -18,7 +18,7 @@ from portal.services.documents import (
 )
 from portal.services.mailersend import send_pdf
 from portal.services.scanner import scan_file
-from portal.services.storage import path_for, publish_file, remove_keys
+from portal.services.storage import claim_pdf_key, path_for, publish_file, remove_keys
 
 logger = logging.getLogger(__name__)
 BACKOFF = [60, 300, 900, 3600]
@@ -142,8 +142,7 @@ def process_render(job):
             if claim.state in {Claim.State.PURGING, Claim.State.PURGED}:
                 finish_job(job, "cancelled")
                 return
-            # The lease-specific immutable key prevents an old renderer replacing a newer PDF.
-            key = f"pdf/{claim.id}/{job.lease_token}.pdf"
+            key = claim_pdf_key(claim.id, job.lease_token)
             size, checksum = publish_file(source, key, settings.MAX_FINAL_PDF_BYTES)
             if checksum != result["checksum"] or size != result["size"]:
                 remove_keys(key)

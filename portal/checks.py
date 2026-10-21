@@ -2,6 +2,7 @@ from django.conf import settings
 from django.core.checks import Error, Tags, register
 
 from portal.services.readiness import bounded_workspace, sandbox_operational
+from portal.services.storage import workspace_root
 
 
 @register(Tags.security, deploy=True)
@@ -11,9 +12,7 @@ def production_checks(app_configs, **kwargs):
         errors.append(
             Error("Deployment checks require production or staging settings.", id="portal.E001")
         )
-    if not settings.DOCUMENT_SANDBOX_ENABLED or not sandbox_operational(
-        str(settings.PRIVATE_STORAGE_ROOT / "work")
-    ):
+    if not settings.DOCUMENT_SANDBOX_ENABLED or not sandbox_operational(str(workspace_root())):
         errors.append(
             Error(
                 "Document sandbox requires Linux Landlock ABI 3+ and libseccomp2.", id="portal.E002"

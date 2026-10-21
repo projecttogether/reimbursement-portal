@@ -8,7 +8,7 @@ from email.message import EmailMessage
 import httpx
 from django.conf import settings
 
-from portal.services.storage import path_for, sync_directory
+from portal.services.storage import outbox_key, path_for, write_bytes
 
 
 @dataclass
@@ -57,15 +57,7 @@ def send_pdf(attempt):
         )
         message.set_content(text)
         message.add_attachment(content, maintype="application", subtype="pdf", filename=filename)
-        target = path_for(f"outbox/{attempt.id}.eml")
-        target.parent.mkdir(exist_ok=True, mode=0o700)
-        with target.open("wb") as output:
-            output.write(message.as_bytes())
-            output.flush()
-            import os
-
-            os.fsync(output.fileno())
-        sync_directory(target.parent)
+        write_bytes(outbox_key(attempt.id), message.as_bytes())
         return SendResult("delivered", f"local-{attempt.id}")
     payload = {
         "from": {"email": settings.MAIL_FROM_ADDRESS, "name": "ProjectTogether"},
