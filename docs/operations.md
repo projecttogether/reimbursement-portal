@@ -139,8 +139,12 @@ configuration. The MVP has no automatic replacement or payment cancellation.
 An interrupted send or a timeout after transmission can mean MailerSend accepted
 the message. These cases become `send_unknown` and do not auto-retry. Inspect
 provider activity first. Signed events with an attempt tag may resolve the case.
+A failure before transmission, such as a missing or corrupt PDF or a blocked
+recipient, is a definite `failed` delivery and can be retried without
+acknowledgment once its cause is fixed.
 The reconciliation command queries known message IDs without resending; an
-unknown send without a message ID requires manual provider lookup.
+unknown send without a message ID requires manual provider lookup. A `queued`
+provider status resolves `send_unknown` to accepted.
 Reconciliation treats MailerSend's `rejected` email status as a terminal failure,
 using suppression or hard-bounce details when present. It retains the PDF for
 resolution and never resends automatically.
