@@ -54,6 +54,19 @@ databases, credentials, and recipients for staging.
 9. Deploy. `migrate` must exit successfully; database, scanner, worker and webhook
    must become healthy. ClamAV's initial signature download can take several minutes.
 
+Static files are collected during the image build in a clean development
+environment. This step needs no database connection or deployment secrets and
+ignores application variables injected by Coolify as build arguments. The running
+containers still require all production settings above.
+
+When using project shared variables, store the complete PostgreSQL URL as the
+project's `DATABASE_URL`, then reference it on each application resource with
+`DATABASE_URL={{project.DATABASE_URL}}`. Its resolved value must begin with
+`postgresql://` or `postgres://`; the URL in `.env.coolify.example` uses the database
+included in this backend. An `UnknownSchemeError` indicates an invalid URL value,
+including an empty value or an unresolved shared-variable reference. Verify the
+resolved value privately in Coolify; do not paste database credentials into logs.
+
 If there is no MailerSend webhook yet, use a temporary random signing secret for
 the initial backend deployment. Create a version 2 webhook pointing to
 `https://reimbursement-hooks.example.org/webhooks/mailersend/`, then replace the
