@@ -20,7 +20,10 @@ CMD ["pytest", "-q"]
 FROM base AS runtime
 RUN uv sync --locked --no-dev
 COPY . .
-RUN DJANGO_DEBUG=1 DEPLOYMENT_ENV=development uv run --no-sync python manage.py collectstatic --noinput \
+# Coolify injects deployment variables as build arguments. Static assets need
+# only development defaults, even when those arguments are empty or unresolved.
+RUN env -i PATH="$PATH" PYTHONDONTWRITEBYTECODE=1 DJANGO_DEBUG=1 DEPLOYMENT_ENV=development \
+    /app/.venv/bin/python manage.py collectstatic --noinput \
     && mkdir -p var/private && chown -R portal:portal /app
 USER portal
 ENV PATH="/app/.venv/bin:$PATH"
