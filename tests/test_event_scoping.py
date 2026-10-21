@@ -6,7 +6,7 @@ import uuid
 import pytest
 from django.utils import timezone
 
-from portal.models import Claim, Delivery, DeliveryAttempt, Event, Upload
+from portal.models import Claim, Delivery, DeliveryAttempt, Draft, Event, Upload
 from portal.services.mailersend import WEBHOOK_TEST_SECRET
 
 pytestmark = pytest.mark.django_db
@@ -29,14 +29,53 @@ def test_web_root_selects_only_its_configured_event(client, event, other_event, 
     settings.PORTAL_ROLE = "web"
     settings.EVENT_SLUG = other_event.slug
     response = client.get("/")
-    assert response.status_code == 302 and response.url == "/forms/other/"
-    response = client.get(response.url)
     assert response.status_code == 200
+    assert "Location" not in response
+    assert "csrftoken" in response.cookies
     assert b"Other Workshop" in response.content
     assert b"Test Workshop" not in response.content
     assert client.get("/forms/test/").status_code == 404
     Event.objects.filter(pk=other_event.pk).update(active=False)
-    assert client.get("/", follow=True).status_code == 403
+    assert client.get("/").status_code == 403
+
+
+@pytest.mark.parametrize("query", ["", "new=1", "new=1&source=invite%2Fadg"])
+def test_web_form_links_redirect_to_root_and_preserve_query(client, event, settings, query):
+    settings.PORTAL_ROLE = "web"
+    settings.EVENT_SLUG = event.slug
+    suffix = f"?{query}" if query else ""
+    response = client.get(f"/forms/{event.slug}/{suffix}", follow=True)
+    assert response.status_code == 200
+    assert response.redirect_chain == [(f"/{suffix}", 302)]
+    assert Draft.objects.count() == 1
+
+
+def test_web_root_resumes_the_same_draft(client, event, settings):
+    settings.PORTAL_ROLE = "web"
+    settings.EVENT_SLUG = event.slug
+    assert client.get("/").status_code == 200
+    binding = client.session[f"draft:{event.slug}"]
+    assert client.get("/").status_code == 200
+    assert client.session[f"draft:{event.slug}"] == binding
+    assert Draft.objects.count() == 1
+
+
+def test_web_can_start_a_new_claim_from_an_old_form_link(client, accepted, settings):
+    settings.PORTAL_ROLE = "web"
+    settings.EVENT_SLUG = accepted.event.slug
+    response = client.get("/")
+    assert response.status_code == 302 and response.url == f"/received/{accepted.pk}/"
+    response = client.get(f"/forms/{accepted.event.slug}/?new=1", follow=True)
+    assert response.status_code == 200
+    assert response.redirect_chain == [("/?new=1", 302)]
+    assert Draft.objects.filter(event=accepted.event, claim__isnull=True).count() == 1
+
+
+def test_web_root_does_not_fall_back_to_another_active_event(client, event, settings):
+    settings.PORTAL_ROLE = "web"
+    settings.EVENT_SLUG = "missing"
+    assert client.get("/").status_code == 404
+    assert not Draft.objects.exists()
 
 
 @pytest.mark.parametrize(
