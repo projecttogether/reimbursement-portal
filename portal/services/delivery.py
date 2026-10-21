@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -130,5 +131,10 @@ def apply_event(event):
 
 @transaction.atomic
 def reconcile_unmatched():
-    for event in DeliveryEvent.objects.filter(applied=False).order_by("received_at")[:100]:
+    events = DeliveryEvent.objects.filter(applied=False).order_by(
+        F("last_checked_at").asc(nulls_first=True), "received_at", "pk"
+    )[:100]
+    for event in list(events):
+        event.last_checked_at = timezone.now()
+        event.save(update_fields=["last_checked_at"])
         apply_event(event)

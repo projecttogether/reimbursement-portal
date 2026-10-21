@@ -14,9 +14,11 @@ from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from portal.forms import ClaimForm
-from portal.models import Claim, Draft, Event, Job, Upload
+from portal.models import Claim, Draft, Event, Job, Upload, WorkspaceReservation
+from portal.services.capacity import CapacityError, admit_upload
 from portal.services.delivery import ingest_event
 from portal.services.mailersend import verify_webhook
+from portal.services.readiness import dependencies
 from portal.services.storage import path_for, remove_keys, save_upload, storage_available
 from portal.services.submissions import (
     SubmissionError,
@@ -28,6 +30,8 @@ from portal.services.submissions import (
 )
 
 UPLOAD_ERRORS = {
+    "normalized_size_limit": "Die verarbeitete Datei ist zu groß. Bitte exportiere sie mit geringerer Auflösung.",
+    "document_sandbox_unavailable": "Die Sicherheitsprüfung ist vorübergehend nicht verfügbar. Bitte kontaktiere uns.",
     "unsupported_type": "Bitte lade eine PDF-, JPG- oder PNG-Datei hoch.",
     "invalid_document": "Die Datei konnte nicht gelesen werden. Bitte exportiere sie erneut.",
     "encrypted_pdf": "Die PDF ist passwortgeschützt. Bitte lade eine ungeschützte Kopie hoch.",
@@ -161,6 +165,21 @@ def upload(request, event_slug):
                     "Alle Belege zusammen dürfen höchstens 50 MB groß sein.", status=413
                 )
             upload_id = uuid.uuid4()
+            try:
+                reservation = admit_upload(request, draft, file.size)
+            except CapacityError as exc:
+                messages = {
+                    "draft_work_limit": "Für dieses Formular wurden zu viele Dateien hochgeladen. Bitte kontaktiere uns.",
+                    "network_work_limit": "Zu viele Uploads aus diesem Netzwerk. Bitte versuche es später erneut.",
+                    "draft_storage_limit": "Die Dateien benötigen zu viel Speicher. Bitte entferne nicht benötigte Dateien.",
+                }
+                raise SubmissionError(
+                    messages.get(
+                        str(exc),
+                        "Die Upload-Kapazität ist gerade begrenzt. Bitte warte kurz und versuche es erneut.",
+                    ),
+                    status=429 if str(exc) in {"draft_work_limit", "network_work_limit"} else 503,
+                ) from exc
             key = f"uploads/{upload_id}/source{extension}"
             try:
                 size, checksum = save_upload(
@@ -186,6 +205,7 @@ def upload(request, event_slug):
                 source_key=key,
                 size=size,
                 checksum=checksum,
+                reserved_bytes=reservation,
             )
             Job.objects.create(key=f"validate:{item.id}", kind="validate", upload=item)
     except Exception:
@@ -246,7 +266,10 @@ def upload_remove(request, event_slug, upload_id):
     if draft.claim_id or item.claim_id:
         raise SubmissionError("Eingereichte Belege können nicht geändert werden.", status=409)
     jobs = list(item.job_set.select_for_update())
-    if any(job.state == "running" for job in jobs):
+    if (
+        any(job.state == "running" for job in jobs)
+        or WorkspaceReservation.objects.filter(upload=item).exists()
+    ):
         raise SubmissionError(
             "Die Datei wird gerade geprüft. Bitte versuche es kurz danach erneut.", status=409
         )
@@ -330,6 +353,12 @@ def readyz(request):
         probe.parent.mkdir(exist_ok=True, mode=0o700)
         probe.write_bytes(b"ready")
         probe.unlink()
+        checks, age = dependencies()
+        if not all(checks.values()):
+            return JsonResponse(
+                {"status": "unavailable", "checks": checks, "oldest_job_age_seconds": age},
+                status=503,
+            )
     except Exception:
         return JsonResponse({"status": "unavailable"}, status=503)
-    return JsonResponse({"status": "OK"})
+    return JsonResponse({"status": "OK", "checks": checks, "oldest_job_age_seconds": age})

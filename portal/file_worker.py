@@ -1,4 +1,4 @@
-"""Untrusted document processing. Invoked in a resource-limited, secret-free subprocess."""
+"""Document conversion, imported after the sandbox bootstrap installs its policy."""
 
 import argparse
 import hashlib
@@ -14,8 +14,11 @@ from PIL import Image, ImageChops, ImageOps
 from pypdf import PdfReader, PdfWriter, Transformation
 from pypdf.generic import DictionaryObject, IndirectObject
 
-Image.MAX_IMAGE_PIXELS = 40_000_000
+from portal.constants import MAX_IMAGE_PIXELS, MAX_NORMALIZED_FILE_BYTES, MAX_RECEIPT_DIMENSION
+
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 warnings.simplefilter("error", Image.DecompressionBombWarning)
+MAX_RECEIPT_RASTER_BYTES = 512_000_000
 BLOCKED_PDF_KEYS = {
     "/JS",
     "/JavaScript",
@@ -32,6 +35,23 @@ BLOCKED_PDF_KEYS = {
 
 class DocumentError(Exception):
     pass
+
+
+class BoundedBuffer(io.BytesIO):
+    def __init__(self, limit, error_code):
+        super().__init__()
+        self.limit, self.error_code = limit, error_code
+
+    def write(self, data):
+        if self.tell() + len(data) > self.limit:
+            raise DocumentError(self.error_code)
+        return super().write(data)
+
+
+def jpeg_bytes(image, quality, *, limit, error_code):
+    output = BoundedBuffer(limit, error_code)
+    image.save(output, "JPEG", quality=quality, optimize=True)
+    return output.getvalue()
 
 
 def check_pdf_objects(reader):
@@ -75,13 +95,17 @@ def normalized_image(source, *, signature=False):
         if not difference.convert("L").point(lambda value: 255 if value > 30 else 0).getbbox():
             raise DocumentError("empty_signature")
         clean.thumbnail((2400, 1200), Image.Resampling.LANCZOS)
+    else:
+        # About 300 DPI on an A4 page; bound derived storage before JPEG encoding.
+        clean.thumbnail((MAX_RECEIPT_DIMENSION, MAX_RECEIPT_DIMENSION), Image.Resampling.LANCZOS)
     return clean
 
 
 def validate_file(source, destination, kind):
     source, destination = Path(source), Path(destination)
     destination.mkdir(parents=True, exist_ok=True, mode=0o700)
-    header = source.read_bytes()[:12]
+    with source.open("rb") as input_file:
+        header = input_file.read(12)
     if header.startswith(b"%PDF-"):
         if kind == "signature":
             raise DocumentError("unsupported_type")
@@ -109,11 +133,18 @@ def validate_file(source, destination, kind):
     image = normalized_image(source, signature=kind == "signature")
     normalized = destination / ("normalized.png" if kind == "signature" else "normalized.jpg")
     temporary = normalized.with_suffix(".tmp")
-    if kind == "signature":
-        image.save(temporary, "PNG", optimize=True)
-    else:
-        image.save(temporary, "JPEG", quality=94, optimize=True)
-    image.close()
+    try:
+        if kind == "signature":
+            output = BoundedBuffer(MAX_NORMALIZED_FILE_BYTES, "normalized_size_limit")
+            image.save(output, "PNG", optimize=True)
+            content = output.getvalue()
+        else:
+            content = jpeg_bytes(
+                image, 94, limit=MAX_NORMALIZED_FILE_BYTES, error_code="normalized_size_limit"
+            )
+        temporary.write_bytes(content)
+    finally:
+        image.close()
     with temporary.open("rb") as output:
         os.fsync(output.fileno())
     os.replace(temporary, normalized)
@@ -137,16 +168,22 @@ def receipt_images(receipts, workspace):
                     bitmap = page.render(scale=scale, may_draw_forms=True, draw_annots=True)
                     image = bitmap.to_pil().convert("RGB")
                     target = workspace / f"receipt-{len(images)}.jpg"
-                    image.save(target, "JPEG", quality=95, optimize=True)
-                    image.close()
-                    bitmap.close()
-                    page.close()
+                    try:
+                        content = jpeg_bytes(
+                            image,
+                            95,
+                            limit=MAX_RECEIPT_RASTER_BYTES - disk_bytes,
+                            error_code="workspace_limit",
+                        )
+                        target.write_bytes(content)
+                    finally:
+                        image.close()
+                        bitmap.close()
+                        page.close()
                     disk_bytes += target.stat().st_size
                     images.append((target, receipt["label"]))
         else:
             images.append((path, receipt["label"]))
-        if disk_bytes > 512_000_000:
-            raise DocumentError("workspace_limit")
     return images
 
 

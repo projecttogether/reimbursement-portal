@@ -40,3 +40,16 @@ Run `tests/browser/signature-recovery.cjs` with the same `BASE_URL` and
 timeouts, and a busy deletion response. It checks that uploaded and drawn
 signatures can be replaced repeatedly without exhausting the three-file limit.
 Upload and submission endpoints are intercepted in this test, so it sends no mail.
+
+Transient polling errors and delayed checks retain the existing upload. The
+signature recovery script verifies retrying the same handle without consuming
+another file slot. It accelerates polling delays while preserving request deadlines.
+It also verifies that drawing a replacement makes the old upload's retry action
+ineffective, so submission cannot revive and reuse the obsolete signature.
+
+Run `tests/browser/error-recovery.cjs` with the same variables. It verifies that
+real IBAN and date validation errors reveal the details step, focus the invalid
+field and reset the signature acknowledgments. It also checks a 503 followed by
+successful receipt validation and receipt-page status recovery. The upload routes
+are intercepted and no valid claim is submitted. Run these browser scripts
+sequentially when using the local SQLite fallback; release checks use PostgreSQL.

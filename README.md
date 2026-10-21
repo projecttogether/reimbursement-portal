@@ -26,7 +26,16 @@ locally. ClamAV's first startup can take several minutes.
 ```
 
 Runs lint, formatting, Django and migration checks, PostgreSQL tests, and a
-production image build. CI runs locally only, using a temporary database.
+production deployment check and image build. CI runs locally only, using a temporary database.
+
+```bash
+./scripts/capacity.sh 250
+```
+
+Runs a synthetic intake burst in disposable PostgreSQL/web/worker containers,
+checks a database/files restore and deletion, and removes their volumes. It sends
+no external mail. Requires a Linux host with Landlock ABI 3 or newer. See the
+[release checklist](docs/production-readiness.md) for scope, limits and launch evidence.
 
 See [operations](docs/operations.md), [form mapping](docs/form-contract.md), and
 [browser checks](docs/browser-checks.md).

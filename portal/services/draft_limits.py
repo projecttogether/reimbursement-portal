@@ -34,13 +34,20 @@ def client_network(request):
 
 @transaction.atomic
 def reserve_draft(request):
+    budget = locked_budget(request)
+    if budget.count >= settings.MAX_DRAFTS_PER_NETWORK:
+        return False
+    budget.count += 1
+    budget.save()
+    return True
+
+
+def locked_budget(request):
     key = salted_hmac("draft-admission", client_network(request)).hexdigest()
     budget, _ = DraftAdmission.objects.select_for_update().get_or_create(key=key)
     now = timezone.now()
     if budget.window_start <= now - timedelta(hours=24):
         budget.window_start, budget.count = now, 0
-    if budget.count >= settings.MAX_DRAFTS_PER_NETWORK:
-        return False
-    budget.count += 1
-    budget.save(update_fields=["window_start", "count"])
-    return True
+        budget.upload_count = budget.upload_bytes = 0
+        budget.upload_window_start, budget.upload_window_count = now, 0
+    return budget

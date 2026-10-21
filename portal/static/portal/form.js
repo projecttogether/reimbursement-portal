@@ -27,7 +27,10 @@
     return element;
   }
   function showError(message, fields = {}) {
-    errorBox.textContent = message;
+    const messages = Object.values(fields)
+      .flat()
+      .map((error) => error.message);
+    errorBox.textContent = [message, ...messages].join(" ");
     errorBox.hidden = false;
     for (const [name, errors] of Object.entries(fields)) {
       const target = document.getElementById(`error-${name}`);
@@ -35,7 +38,9 @@
         target.textContent = errors.map((error) => error.message).join(" ");
       form.elements.namedItem(name)?.setAttribute("aria-invalid", "true");
     }
-    errorBox.focus();
+    const invalid = form.querySelector('[aria-invalid="true"]');
+    if (invalid && invalid.getClientRects().length) invalid.focus();
+    else errorBox.focus();
   }
   function clearErrors() {
     errorBox.hidden = true;
@@ -47,20 +52,44 @@
       .forEach((element) => element.removeAttribute("aria-invalid"));
   }
   async function api(url, options = {}) {
-    const response = await fetch(url, {
-      credentials: "same-origin",
-      ...options,
-      headers: { "X-CSRFToken": csrf, ...options.headers },
-    });
-    const result = await response
-      .json()
-      .catch(() => ({ error: "Die Anfrage konnte nicht verarbeitet werden." }));
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), 15000);
+    let response, result;
+    try {
+      response = await fetch(url, {
+        credentials: "same-origin",
+        ...options,
+        signal: controller.signal,
+        headers: { "X-CSRFToken": csrf, ...options.headers },
+      });
+      result = await response.json();
+    } catch {
+      if (response && !response.ok) {
+        result = {
+          error: [404, 410].includes(response.status)
+            ? "Die Sitzung oder Datei ist nicht mehr verfügbar. Bitte öffne das Formular erneut."
+            : "Die Anfrage konnte nicht verarbeitet werden.",
+        };
+      } else {
+        const error = new Error(
+          "Die Verbindung wurde unterbrochen. Bitte versuche es erneut.",
+        );
+        error.retryable = true;
+        throw error;
+      }
+    } finally {
+      clearTimeout(deadline);
+    }
     if (!response.ok) {
       const error = new Error(
         result.error || "Die Anfrage ist fehlgeschlagen.",
       );
       error.fields = result.fields;
       error.status = response.status;
+      error.retryable =
+        response.status === 408 ||
+        response.status === 429 ||
+        response.status >= 500;
       throw error;
     }
     return result;
@@ -188,6 +217,30 @@
         }
       });
       item.append(remove);
+      if (file.state === "pending" && !file.polling) {
+        const retry = node("button", "Status erneut prüfen");
+        retry.type = "button";
+        retry.addEventListener("click", async () => {
+          file.polling = true;
+          renderFiles(row);
+          try {
+            Object.assign(
+              file,
+              await pollUpload(file, (update) => {
+                Object.assign(file, update);
+                renderFiles(row);
+              }),
+            );
+          } catch (error) {
+            file.state = "failed";
+            file.message = error.message;
+          } finally {
+            file.polling = false;
+            renderFiles(row);
+          }
+        });
+        item.append(retry);
+      }
       list.append(item);
     });
   }
@@ -234,17 +287,38 @@
         );
       xhr.send(data);
     });
-    onUpdate?.({ ...result, message: "Wird geprüft …" });
-    for (let attempt = 0; attempt < 180; attempt++) {
-      const status = await api(result.status_url);
+    return pollUpload(result, onUpdate);
+  }
+  async function pollUpload(result, onUpdate) {
+    onUpdate?.({ ...result, state: "pending", message: "Wird geprüft …" });
+    for (let attempt = 0; attempt < 36; attempt++) {
+      let status;
+      try {
+        status = await api(result.status_url);
+      } catch (error) {
+        if (!error.retryable) throw error;
+        status = {
+          state: "pending",
+          message:
+            "Die Verbindung ist verzögert. Die Prüfung bleibt gespeichert.",
+        };
+      }
       onUpdate?.(status);
       if (status.state === "ready") return { ...result, ...status };
       if (status.state === "failed") throw new Error(status.message);
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const delay = Math.min(10000, 2000 * 1.4 ** attempt);
+      await new Promise((resolve) =>
+        setTimeout(resolve, delay + Math.random() * delay * 0.2),
+      );
     }
-    throw new Error(
-      "Die Prüfung dauert länger. Bitte versuche es später erneut und behalte dieses Formular geöffnet.",
-    );
+    const delayed = {
+      ...result,
+      state: "pending",
+      message:
+        "Die Prüfung dauert länger. Bitte prüfe den Status später erneut; die Datei bleibt gespeichert.",
+    };
+    onUpdate?.(delayed);
+    return delayed;
   }
   function addRow() {
     if (rows.length >= config.max_expenses) return;
@@ -310,6 +384,7 @@
             name: selectedFile.name,
             size: selectedFile.size,
             state: "uploading",
+            polling: true,
           };
           row.files.push(file);
           renderFiles(row);
@@ -325,6 +400,7 @@
             file.state = "failed";
             file.message = error.message;
           }
+          file.polling = false;
           renderFiles(row);
         }
       });
@@ -349,6 +425,7 @@
     await discardSignature();
     context.clearRect(0, 0, canvas.width, canvas.height);
     hasInk = false;
+    document.getElementById("retry-signature").hidden = true;
     document.getElementById("signature-file").value = "";
     signatureStatus.textContent =
       "Mit Finger, Stift oder Maus unterschreiben oder ein Bild hochladen. JPG/PNG, höchstens 1 MB.";
@@ -358,6 +435,8 @@
       signature = await uploadFile(blob, "signature", null, (update) => {
         if (update.id) signature = { ...signature, ...update };
       });
+      document.getElementById("retry-signature").hidden =
+        signature.state !== "pending";
     } catch (error) {
       // Retain the deletion handle even if validation or polling fails.
       if (signature) signature.state = "failed";
@@ -373,6 +452,7 @@
       "clear-signature",
       "edit-button",
       "submit-button",
+      "retry-signature",
     ];
     controls.forEach((id) => (document.getElementById(id).disabled = true));
     try {
@@ -385,6 +465,8 @@
       return false;
     } finally {
       signatureBusy = false;
+      document.getElementById("retry-signature").hidden =
+        signature?.state !== "pending";
       controls.forEach((id) => (document.getElementById(id).disabled = false));
     }
   }
@@ -401,6 +483,7 @@
       if (!hasInk) context.clearRect(0, 0, canvas.width, canvas.height);
       // Delete the previous server record before uploading the new drawing.
       signature.state = "obsolete";
+      document.getElementById("retry-signature").hidden = true;
     }
     canvas.setPointerCapture(event.pointerId);
     const [x, y] = position(event);
@@ -421,6 +504,22 @@
   });
   canvas.addEventListener("pointerup", () => (drawing = false));
   canvas.addEventListener("pointercancel", () => (drawing = false));
+  document.getElementById("retry-signature").addEventListener("click", () =>
+    signatureAction(async () => {
+      if (signature?.state !== "pending" || !signature.status_url) return;
+      signature = await pollUpload(signature, (update) => {
+        signature = { ...signature, ...update };
+        signatureStatus.textContent =
+          update.message || "Unterschrift wird geprüft …";
+      });
+      document.getElementById("retry-signature").hidden =
+        signature.state !== "pending";
+      signatureStatus.textContent =
+        signature.state === "ready"
+          ? "Unterschrift geprüft."
+          : signature.message;
+    }),
+  );
   document
     .getElementById("clear-signature")
     .addEventListener("click", () => signatureAction(clearSignature));
@@ -438,7 +537,10 @@
         signatureStatus.textContent =
           "Unterschrift wird hochgeladen und geprüft …";
         await uploadSignature(file);
-        signatureStatus.textContent = `Unterschrift geprüft: ${file.name}`;
+        signatureStatus.textContent =
+          signature.state === "ready"
+            ? `Unterschrift geprüft: ${file.name}`
+            : signature.message;
         const image = await createImageBitmap(file);
         const scale = Math.min(
           canvas.width / image.width,
@@ -523,6 +625,7 @@
       content.append(node("p", `Summe: ${money(total, currency)}`, "totals"));
     details.hidden = true;
     review.hidden = false;
+    review.querySelector("h2").focus();
     document.getElementById("step-details").classList.remove("active");
     document.getElementById("step-details").removeAttribute("aria-current");
     document.getElementById("step-review").classList.add("active");
@@ -555,7 +658,7 @@
       showError("Bitte bestätige die Erklärung und den Datenschutzhinweis.");
       return;
     }
-    if (!hasInk && signature?.state !== "ready") {
+    if (!hasInk && !["ready", "pending"].includes(signature?.state)) {
       showError("Bitte unterschreibe oder lade eine Unterschrift hoch.");
       return;
     }
@@ -566,12 +669,23 @@
       .querySelectorAll("button,input")
       .forEach((element) => (element.disabled = true));
     try {
+      if (signature?.state === "pending") {
+        signature = await pollUpload(signature, (update) => {
+          signature = { ...signature, ...update };
+          signatureStatus.textContent =
+            update.message || "Unterschrift wird geprüft …";
+        });
+        document.getElementById("retry-signature").hidden =
+          signature.state !== "pending";
+        if (signature.state !== "ready") throw new Error(signature.message);
+      }
       if (!signature || signature.state !== "ready") {
         await discardSignature();
         const blob = await new Promise((resolve) =>
           canvas.toBlob(resolve, "image/png"),
         );
         await uploadSignature(blob);
+        if (signature.state !== "ready") throw new Error(signature.message);
       }
       const data = {
         draft_id: config.draft_id,
@@ -606,6 +720,25 @@
       accepted = true;
       window.location.assign(result.receipt_url);
     } catch (error) {
+      if (error.fields && Object.keys(error.fields).length) {
+        try {
+          await clearSignature();
+        } catch {
+          if (signature) signature.state = "obsolete";
+          context.clearRect(0, 0, canvas.width, canvas.height);
+          hasInk = false;
+        }
+        form.elements.declaration.checked = false;
+        form.elements.privacy_acknowledged.checked = false;
+        details.hidden = false;
+        review.hidden = true;
+        document.getElementById("step-details").classList.add("active");
+        document
+          .getElementById("step-details")
+          .setAttribute("aria-current", "step");
+        document.getElementById("step-review").classList.remove("active");
+        document.getElementById("step-review").removeAttribute("aria-current");
+      }
       showError(error.message, error.fields);
       submitting = false;
       review

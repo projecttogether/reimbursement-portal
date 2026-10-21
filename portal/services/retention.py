@@ -4,10 +4,19 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
-from portal.models import Claim, DeliveryEvent, Draft, DraftAdmission, Job, Upload
-from portal.services.documents import ProcessingError
+from portal.models import (
+    Claim,
+    DeliveryEvent,
+    Draft,
+    DraftAdmission,
+    Job,
+    Upload,
+    WorkspaceReservation,
+)
+from portal.services.documents import ProcessingError, remove_abandoned_workspace
 from portal.services.storage import remove_keys
 
 logger = logging.getLogger(__name__)
@@ -21,6 +30,7 @@ def purge_claim(claim_id):
         if (
             Job.objects.filter(state="running").filter(claim=claim).exists()
             or Job.objects.filter(state="running", delivery__claim=claim).exists()
+            or WorkspaceReservation.objects.filter(Q(claim=claim) | Q(upload__claim=claim)).exists()
         ):
             raise ProcessingError("claim_busy")
         claim.state = Claim.State.PURGING
@@ -111,7 +121,11 @@ def cleanup(*, execute=False):
             draft = (
                 Draft.objects.select_for_update().filter(pk=draft_id, claim__isnull=True).first()
             )
-            if not draft or Job.objects.filter(upload__draft=draft, state="running").exists():
+            if (
+                not draft
+                or Job.objects.filter(upload__draft=draft, state="running").exists()
+                or WorkspaceReservation.objects.filter(upload__draft=draft).exists()
+            ):
                 continue
             try:
                 for upload in draft.uploads.all():
@@ -126,7 +140,10 @@ def cleanup(*, execute=False):
         claim__isnull=True, draft__claim__isnull=False, created_at__lt=now - timedelta(hours=24)
     )
     for upload in unused:
-        if not Job.objects.filter(upload=upload, state="running").exists():
+        if (
+            not Job.objects.filter(upload=upload, state="running").exists()
+            and not WorkspaceReservation.objects.filter(upload=upload).exists()
+        ):
             try:
                 remove_keys(upload.source_key, upload.normalized_key)
                 upload.delete()
@@ -144,6 +161,10 @@ def cleanup(*, execute=False):
 def orphan_cleanup():
     cutoff = (timezone.now() - timedelta(hours=24)).timestamp()
     root = settings.PRIVATE_STORAGE_ROOT
+    for reservation in WorkspaceReservation.objects.filter(
+        created_at__lt=timezone.now() - timedelta(seconds=settings.JOB_LEASE_SECONDS)
+    ):
+        remove_abandoned_workspace(reservation)
     for directory in (root / "uploads").glob("*"):
         if directory.is_dir() and directory.stat().st_mtime < cutoff:
             try:
@@ -152,8 +173,24 @@ def orphan_cleanup():
                 continue
             if not exists:
                 shutil.rmtree(directory)
+            else:
+                upload = Upload.objects.get(pk=directory.name)
+                retained = {upload.source_key, upload.normalized_key}
+                for file in directory.iterdir():
+                    if (
+                        file.is_file()
+                        and file.stat().st_mtime < cutoff
+                        and str(file.relative_to(root)) not in retained
+                    ):
+                        file.unlink()
     for directory in (root / "work").glob("job-*"):
-        if directory.is_dir() and directory.stat().st_mtime < cutoff:
+        if (
+            directory.is_dir()
+            and directory.stat().st_mtime < cutoff
+            and not WorkspaceReservation.objects.filter(
+                directory=str(directory.relative_to(root))
+            ).exists()
+        ):
             shutil.rmtree(directory)
     for file in (root / "pdf").glob("*/*.pdf"):
         if (

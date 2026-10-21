@@ -1,3 +1,5 @@
+import uuid
+
 from django.conf import settings
 from django.core.files.uploadhandler import StopUpload, TemporaryFileUploadHandler
 from django.http import JsonResponse
@@ -41,4 +43,15 @@ class PrivateResponseMiddleware:
         )
         if not request.path.startswith("/static/"):
             response["Cache-Control"] = "no-store, private"
+        return response
+
+
+class RequestContextMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        request.request_id = str(uuid.uuid4())
+        response = self.get_response(request)
+        response["X-Request-ID"] = request.request_id
         return response
