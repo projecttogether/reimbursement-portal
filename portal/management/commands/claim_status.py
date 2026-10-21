@@ -11,12 +11,18 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("reference", nargs="?")
+        parser.add_argument("--state", choices=Claim.State.values)
+        parser.add_argument("--delivery-state")
 
     def handle(self, *args, **options):
-        claims = Claim.objects.order_by("submitted_at")
+        claims = Claim.objects.select_related("delivery").order_by("submitted_at", "pk")
         if options["reference"]:
             claims = claims.filter(pk=options["reference"])
-        for claim in claims[:100]:
+        if options["state"]:
+            claims = claims.filter(state=options["state"])
+        if options["delivery_state"]:
+            claims = claims.filter(delivery__state=options["delivery_state"])
+        for claim in claims.iterator(chunk_size=100):
             delivery = getattr(claim, "delivery", None)
             self.stdout.write(
                 json.dumps(
@@ -32,11 +38,17 @@ class Command(BaseCommand):
                     }
                 )
             )
+        oldest = Job.objects.filter(state__in=["pending", "running"]).order_by("created_at").first()
         self.stdout.write(
             json.dumps(
                 {
                     "pending_jobs": Job.objects.filter(state="pending").count(),
                     "failed_jobs": Job.objects.filter(state="failed").count(),
+                    "oldest_job_age_seconds": int(
+                        (timezone.now() - oldest.created_at).total_seconds()
+                    )
+                    if oldest
+                    else 0,
                 }
             )
         )

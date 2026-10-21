@@ -1,4 +1,4 @@
-"""Untrusted document processing. Invoked in a resource-limited, secret-free subprocess."""
+"""Document conversion, imported after the sandbox bootstrap installs its policy."""
 
 import argparse
 import hashlib
@@ -14,7 +14,9 @@ from PIL import Image, ImageChops, ImageOps
 from pypdf import PdfReader, PdfWriter, Transformation
 from pypdf.generic import DictionaryObject, IndirectObject
 
-Image.MAX_IMAGE_PIXELS = 40_000_000
+from portal.constants import MAX_IMAGE_PIXELS, MAX_NORMALIZED_FILE_BYTES, MAX_RECEIPT_DIMENSION
+
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 warnings.simplefilter("error", Image.DecompressionBombWarning)
 BLOCKED_PDF_KEYS = {
     "/JS",
@@ -32,6 +34,19 @@ BLOCKED_PDF_KEYS = {
 
 class DocumentError(Exception):
     pass
+
+
+class BoundedBuffer(io.BytesIO):
+    def write(self, data):
+        if self.tell() + len(data) > MAX_NORMALIZED_FILE_BYTES:
+            raise DocumentError("normalized_size_limit")
+        return super().write(data)
+
+
+def jpeg_bytes(image, quality):
+    output = BoundedBuffer()
+    image.save(output, "JPEG", quality=quality, optimize=True)
+    return output.getvalue()
 
 
 def check_pdf_objects(reader):
@@ -75,13 +90,17 @@ def normalized_image(source, *, signature=False):
         if not difference.convert("L").point(lambda value: 255 if value > 30 else 0).getbbox():
             raise DocumentError("empty_signature")
         clean.thumbnail((2400, 1200), Image.Resampling.LANCZOS)
+    else:
+        # About 300 DPI on an A4 page; bound derived storage before JPEG encoding.
+        clean.thumbnail((MAX_RECEIPT_DIMENSION, MAX_RECEIPT_DIMENSION), Image.Resampling.LANCZOS)
     return clean
 
 
 def validate_file(source, destination, kind):
     source, destination = Path(source), Path(destination)
     destination.mkdir(parents=True, exist_ok=True, mode=0o700)
-    header = source.read_bytes()[:12]
+    with source.open("rb") as input_file:
+        header = input_file.read(12)
     if header.startswith(b"%PDF-"):
         if kind == "signature":
             raise DocumentError("unsupported_type")
@@ -109,11 +128,15 @@ def validate_file(source, destination, kind):
     image = normalized_image(source, signature=kind == "signature")
     normalized = destination / ("normalized.png" if kind == "signature" else "normalized.jpg")
     temporary = normalized.with_suffix(".tmp")
-    if kind == "signature":
-        image.save(temporary, "PNG", optimize=True)
-    else:
-        image.save(temporary, "JPEG", quality=94, optimize=True)
-    image.close()
+    try:
+        output = BoundedBuffer()
+        if kind == "signature":
+            image.save(output, "PNG", optimize=True)
+        else:
+            output.write(jpeg_bytes(image, 94))
+        temporary.write_bytes(output.getvalue())
+    finally:
+        image.close()
     with temporary.open("rb") as output:
         os.fsync(output.fileno())
     os.replace(temporary, normalized)
@@ -137,7 +160,10 @@ def receipt_images(receipts, workspace):
                     bitmap = page.render(scale=scale, may_draw_forms=True, draw_annots=True)
                     image = bitmap.to_pil().convert("RGB")
                     target = workspace / f"receipt-{len(images)}.jpg"
-                    image.save(target, "JPEG", quality=95, optimize=True)
+                    content = jpeg_bytes(image, 95)
+                    if disk_bytes + len(content) > 512_000_000:
+                        raise DocumentError("workspace_limit")
+                    target.write_bytes(content)
                     image.close()
                     bitmap.close()
                     page.close()

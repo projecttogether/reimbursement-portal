@@ -41,6 +41,18 @@ def save_upload(file, key, limit):
     return size, checksum.hexdigest()
 
 
+def publish_file(source, key, limit):
+    """Copy bounded sandbox output across filesystems, then atomically publish."""
+
+    class FileChunks:
+        def chunks(self):
+            with open(source, "rb") as input_file:
+                while chunk := input_file.read(64 * 1024):
+                    yield chunk
+
+    return save_upload(FileChunks(), key, limit)
+
+
 def sync_directory(path):
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
     try:

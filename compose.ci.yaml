@@ -22,6 +22,8 @@ services:
       DATABASE_URL: postgresql://reimbursement:local-ci-only@database:5432/reimbursement
       MAIL_DELIVERY_MODE: local
       UPLOAD_SCANNER: disabled
+    tmpfs:
+      - /app/var/private/work:size=700m,mode=0700,uid=10001,gid=10001
     depends_on:
       database:
         condition: service_healthy
@@ -33,4 +35,5 @@ services:
         ruff format --check .
         python manage.py check
         python manage.py makemigrations --check --dry-run
+        python scripts/check_production.py
         pytest -q

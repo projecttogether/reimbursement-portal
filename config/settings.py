@@ -4,8 +4,16 @@ from pathlib import Path
 import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
 
+from portal.constants import MAX_IMAGE_PIXELS as MAX_IMAGE_PIXELS
+from portal.constants import MAX_NORMALIZED_FILE_BYTES as MAX_NORMALIZED_FILE_BYTES
+
 BASE_DIR = Path(__file__).resolve().parent.parent
-DEBUG = os.getenv("DJANGO_DEBUG", "1") == "1"
+DEBUG = os.getenv("DJANGO_DEBUG", "0") == "1"
+DEPLOYMENT_ENV = os.getenv("DEPLOYMENT_ENV", "development" if DEBUG else "production")
+if DEPLOYMENT_ENV not in {"development", "staging", "production"} or DEBUG != (
+    DEPLOYMENT_ENV == "development"
+):
+    raise ImproperlyConfigured("Only explicit development mode may enable DJANGO_DEBUG.")
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "development-only-do-not-use-in-production")
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,testserver").split(",")
 CSRF_TRUSTED_ORIGINS = list(filter(None, os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",")))
@@ -18,6 +26,7 @@ INSTALLED_APPS = [
     "portal",
 ]
 MIDDLEWARE = [
+    "portal.middleware.RequestContextMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
@@ -82,7 +91,19 @@ MAX_EXPENSES = 30
 MAX_FILES_PER_EXPENSE = 3
 MAX_PDF_PAGES = 30
 MAX_CLAIM_PAGES = 100
-MAX_IMAGE_PIXELS = 40_000_000
+MAX_DRAFT_DERIVED_BYTES = 100_000_000
+MAX_RENDER_WORKSPACE_BYTES = 600_000_000
+MAX_UPLOADS_PER_DRAFT = 200
+MAX_UPLOAD_BYTES_PER_DRAFT = 150_000_000
+MAX_UPLOADS_PER_NETWORK = int(os.getenv("MAX_UPLOADS_PER_NETWORK", "60000"))
+MAX_UPLOAD_BYTES_PER_NETWORK = int(os.getenv("MAX_UPLOAD_BYTES_PER_NETWORK", "45000000000"))
+MAX_UPLOADS_PER_NETWORK_PER_MINUTE = int(os.getenv("MAX_UPLOADS_PER_NETWORK_PER_MINUTE", "3000"))
+MAX_PENDING_VALIDATIONS = int(os.getenv("MAX_PENDING_VALIDATIONS", "1000"))
+# Two synchronous web workers may each be spooling a maximum-sized request.
+UPLOAD_TEMP_HEADROOM_BYTES = 2 * (MAX_RECEIPT_BYTES + 128_000)
+DOCUMENT_SANDBOX_ENABLED = os.getenv("DOCUMENT_SANDBOX_ENABLED", "1") == "1"
+MAX_JOB_AGE_SECONDS = int(os.getenv("MAX_JOB_AGE_SECONDS", "900"))
+REQUIRE_WORKER_HEARTBEAT = os.getenv("REQUIRE_WORKER_HEARTBEAT", "1" if not DEBUG else "0") == "1"
 MAX_ACTIVE_DRAFTS = int(os.getenv("MAX_ACTIVE_DRAFTS", "1000"))
 MAX_DRAFTS_PER_NETWORK = int(os.getenv("MAX_DRAFTS_PER_NETWORK", "300"))
 TRUSTED_PROXY_CIDRS = list(filter(None, os.getenv("TRUSTED_PROXY_CIDRS", "").split(",")))
@@ -110,21 +131,33 @@ APPROVED_DELIVERY_RECIPIENTS = list(
 TEST_RECIPIENT_ALLOWLIST = list(
     filter(None, os.getenv("TEST_RECIPIENT_ALLOWLIST", "").lower().split(","))
 )
-DEPLOYMENT_ENV = os.getenv("DEPLOYMENT_ENV", "development" if DEBUG else "production")
 HEALTHCHECK_TOKEN = os.getenv("HEALTHCHECK_TOKEN", "")
 REDACTED_LOG_FORMAT = "{levelname} {name} {message}"
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
-    "formatters": {"safe": {"format": REDACTED_LOG_FORMAT, "style": "{"}},
-    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "safe"}},
+    "formatters": {
+        "safe": {
+            "()": "portal.logging.RedactedExceptionFormatter",
+            "format": REDACTED_LOG_FORMAT,
+            "style": "{",
+        }
+    },
+    "filters": {"request": {"()": "portal.logging.SafeRequestFilter"}},
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "formatter": "safe"},
+        "requests": {"class": "logging.StreamHandler", "formatter": "safe", "filters": ["request"]},
+    },
     "root": {"handlers": ["console"], "level": "INFO"},
     "loggers": {
-        "django.request": {"handlers": ["console"], "level": "CRITICAL", "propagate": False},
+        "django.request": {"handlers": ["requests"], "level": "WARNING", "propagate": False},
+        "django.security": {"handlers": ["requests"], "level": "WARNING", "propagate": False},
         "httpx": {"level": "WARNING"},
     },
 }
 if not DEBUG:
+    if not REQUIRE_WORKER_HEARTBEAT:
+        raise ImproperlyConfigured("Production requires worker heartbeat checks.")
     required = [
         "DJANGO_SECRET_KEY",
         "DATABASE_URL",
@@ -136,11 +169,23 @@ if not DEBUG:
         "HEALTHCHECK_TOKEN",
     ]
     missing = [key for key in required if not os.getenv(key)]
-    if missing or SECRET_KEY.startswith("development-"):
+    if (
+        missing
+        or SECRET_KEY.startswith("development-")
+        or len(SECRET_KEY) < 50
+        or len(set(SECRET_KEY)) < 5
+    ):
         raise ImproperlyConfigured(f"Missing production configuration: {', '.join(missing)}")
     if DATABASES["default"]["ENGINE"] != "django.db.backends.postgresql":
         raise ImproperlyConfigured("Production requires PostgreSQL.")
     if UPLOAD_SCANNER != "clamav" or MAIL_DELIVERY_MODE != "mailersend":
         raise ImproperlyConfigured("Production requires ClamAV and MailerSend.")
+    if not DOCUMENT_SANDBOX_ENABLED:
+        raise ImproperlyConfigured("Production requires the document sandbox.")
+    if os.getenv("TRUST_PROXY_HEADERS", "0") == "1" and not TRUSTED_PROXY_CIDRS:
+        raise ImproperlyConfigured("Trusted proxy headers require TRUSTED_PROXY_CIDRS.")
     if DEPLOYMENT_ENV == "staging" and not TEST_RECIPIENT_ALLOWLIST:
         raise ImproperlyConfigured("Staging requires TEST_RECIPIENT_ALLOWLIST.")
+
+# HSTS preload enrollment is an independent domain-owner decision.
+SILENCED_SYSTEM_CHECKS = ["security.W021"]

@@ -1,11 +1,13 @@
 import json
+from pathlib import Path
 
 import pypdfium2 as pdfium
 import pytest
 from PIL import Image
+from pypdf import PdfWriter
 
 from portal.file_worker import build_pdf
-from portal.services.documents import build_claim_pdf, temporary_workspace
+from portal.services.documents import build_claim_pdf, run_document_process, temporary_workspace
 
 pytestmark = pytest.mark.django_db
 
@@ -53,3 +55,35 @@ def test_summary_text_stays_inside_page_margins(accepted):
             assert max(box[2] for box in boxes) <= page.get_width() - 30
             text.close()
             page.close()
+
+
+def test_maximum_receipt_page_count_survives_confined_assembly(tmp_path):
+    receipts = []
+    for index, count in enumerate([30, 30, 30, 10]):
+        source = tmp_path / f"receipt-{index}.pdf"
+        writer = PdfWriter()
+        for _ in range(count):
+            writer.add_blank_page(595, 842)
+        writer.write(source)
+        receipts.append(
+            {"path": str(source), "media_type": "application/pdf", "label": f"Receipt {index}"}
+        )
+    with temporary_workspace() as workspace:
+        manifest = Path(workspace) / "manifest.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "html": "<h1>Synthetic maximum-page claim</h1>",
+                    "allowed_assets": [],
+                    "receipts": receipts,
+                    "reference": "synthetic",
+                    "max_bytes": 10_000_000,
+                }
+            )
+        )
+        output = manifest.parent / "complete.pdf"
+        result = run_document_process("build", manifest, output)
+        assert result["pages"] == 101
+        assert 0 < output.stat().st_size <= 10_000_000
+        with pdfium.PdfDocument(output) as document:
+            assert len(document) == 101

@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import uuid
@@ -93,7 +94,7 @@ def prepared(client, event):
             source_key=key,
             normalized_key=key,
             size=len(content),
-            checksum="synthetic",
+            checksum=hashlib.sha256(content).hexdigest(),
             state="ready",
             media_type="image/png",
             pages=1,

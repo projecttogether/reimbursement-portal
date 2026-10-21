@@ -34,12 +34,24 @@ docker compose up -d web worker
 Configuration updates increment the event revision. Unsubmitted forms from an
 older revision must reload and review again; accepted claims keep their original
 configuration snapshot. Run migrations once before replacing the web/worker.
-Only one worker process is supported operationally for the MVP; its queue uses
-row locks and leases, and prioritizes upload validation over rendering.
+Only one worker process is supported operationally; its queue uses row locks and
+leases and acquires ready jobs in FIFO order across validation, rendering and
+sending. Later uploads cannot indefinitely overtake accepted claims.
 
-The Django deployment check leaves HSTS preload disabled and reports its optional
-preload warning. TLS redirection, secure cookies, and HSTS are enabled in production.
+The Django deployment check leaves HSTS preload disabled and suppresses only its
+optional preload warning. TLS redirection, secure cookies, and HSTS are enabled in production.
 Decide preload enrollment with the owner of the selected public domain.
+
+The supplied image requires Linux x86_64/aarch64, Landlock ABI 3 or newer and
+libseccomp. Startup and readiness run a real confinement probe. Document children
+can read only their selected inputs and trusted runtime/font files, can write only
+their own workspace, and cannot open network sockets. Keep the private 700 MB
+tmpfs mount at `PRIVATE_STORAGE_ROOT/work` on both web and worker. Startup rejects
+a missing, shared or unbounded workspace in production. This mount is separate
+from persistent source/PDF storage; publishing copies files atomically between them.
+Keep the supplied web/worker limit of 64 processes/threads per container. The
+syscall filter also denies signaling and changing another process's resource or
+scheduling limits, including pidfd and queued-signal variants.
 
 Use completely separate staging databases, files, credentials, and recipients.
 Set `DEPLOYMENT_ENV=staging` and a nonempty `TEST_RECIPIENT_ALLOWLIST`. The send
@@ -57,6 +69,16 @@ receives proxied requests. The proxy must replace or correctly append
 `X-Forwarded-For`; the app walks that chain from the trusted connection to the first
 untrusted address. With no trusted proxies configured, it uses `REMOTE_ADDR`.
 Configure the edge's connection/request limits as well and monitor 429/503 rates.
+
+Upload admission also charges cumulative processing work: 200 uploads / 150 MB per
+draft and 60,000 uploads / 45 GB per network per day, with 3,000 uploads per network
+per minute. Deleting or replacing a file does not refund those counters. A pending
+upload reserves 10 MB for normalization; each draft permits 100 MB of derived and
+reserved data. Normalized images are resized and capped at 10 MB of serialized
+output. A global database lock protects admission against concurrent processes,
+including the configured free-space floor, request-spooling headroom and active
+execution reservations. At most 1,000 validations may be queued/running. Tune the
+documented environment limits against measured deployment capacity before launch.
 
 ## MailerSend and handoff
 
@@ -90,8 +112,10 @@ Use operational reasons without participant names, account details, or receipt t
 
 ```bash
 python manage.py claim_status
+python manage.py claim_status --state processing_failed
 python manage.py claim_status CLAIM_UUID
-python manage.py reconcile_deliveries
+python manage.py reconcile_deliveries --batch-size 100
+python manage.py verify_storage
 python manage.py retry_claim CLAIM_UUID --reason 'Resolved the sender configuration'
 python manage.py retry_claim CLAIM_UUID --reason 'Provider activity checked; intentional resend' \
   --acknowledge-duplicate-risk
@@ -118,17 +142,28 @@ resolution and never resends automatically.
 
 ## Monitoring and maintenance
 
-`/-/healthz` checks only process liveness. `/-/readyz` checks database and writable
-storage/capacity. Production probes require `X-Health-Token`. Health checks do not
-call MailerSend. The worker updates `worker-heartbeat` in private storage; the
-Compose health check permits the bounded document-processing interval.
+`/-/healthz` checks only process liveness. `/-/readyz` checks database, writable
+storage/capacity, document confinement, the bounded workspace, scanner PING,
+worker heartbeat and oldest ready-job age (default maximum 900 seconds).
+Production probes require `X-Health-Token`. Health checks do not call MailerSend.
+The worker updates `worker-heartbeat` in private storage; heartbeat checks permit
+the bounded document-processing interval.
+
+HTTP responses include a generated `X-Request-ID`. Access logs contain this ID,
+method, status and duration. Application error stacks retain exception type and
+code locations while excluding exception values, source text, bodies, paths,
+headers and local variables. Use request IDs and operational references to
+investigate failures without putting financial content in logs.
 
 The worker reclaims expired leases and runs cleanup each minute. Rendering can be
 reclaimed; interrupted sends become unknown. It retries only known pre-acceptance
 email failures and transient scanner outages, with bounded backoff.
 
 Schedule `reconcile_deliveries` every 15 minutes in the host's scheduler and
-monitor its exit status. Monitor queued job age, worker heartbeat, failed jobs,
+monitor its exit status. It rotates through bounded batches, including failed
+provider lookups, and exits nonzero on provider failures; unmatched webhook events
+also rotate. `claim_status` streams all matches and supports state filters.
+Monitor queued job age, worker heartbeat, failed jobs,
 `send_unknown`/paused/failed deliveries, scanner availability, free disk, and purge
 failures. Use the independent PT monitoring channel, so a MailerSend outage cannot
 suppress its own alert. `claim_status` emits redacted operational state for this.
@@ -156,3 +191,8 @@ before restarting processing. Never automatically resend every restored job.
 Test a restore using dummy data and verify database/file consistency, unknown-send
 handling, and deletion. Keep exceptional deletion evidence outside the rollback
 scope so an old backup cannot silently reactivate deleted financial data.
+Run `python manage.py verify_storage` before restarting the restored application;
+it checks recorded source/final PDF hashes, sizes and normalized-file presence
+without printing participant content. `./scripts/capacity.sh 250` includes a
+separate synthetic restore/deletion exercise; see `docs/production-readiness.md`
+for its scope and the remaining staging and owner evidence.

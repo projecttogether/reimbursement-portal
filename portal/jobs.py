@@ -1,15 +1,14 @@
 import logging
-import os
 import random
 import uuid
 from datetime import timedelta
 
 from django.conf import settings
 from django.db import connection, transaction
-from django.db.models import Case, IntegerField, Value, When
 from django.utils import timezone
 
 from portal.models import Claim, Delivery, DeliveryAttempt, Job, Upload
+from portal.services.capacity import CapacityError
 from portal.services.delivery import reconcile_unmatched, update_delivery
 from portal.services.documents import (
     ProcessingError,
@@ -19,7 +18,7 @@ from portal.services.documents import (
 )
 from portal.services.mailersend import send_pdf
 from portal.services.scanner import scan_file
-from portal.services.storage import path_for, remove_keys, sync_directory
+from portal.services.storage import path_for, publish_file, remove_keys
 
 logger = logging.getLogger(__name__)
 BACKOFF = [60, 300, 900, 3600]
@@ -27,18 +26,10 @@ BACKOFF = [60, 300, 900, 3600]
 
 @transaction.atomic
 def acquire_job():
-    # Validation has priority so a large PDF does not indefinitely delay new forms.
-    query = (
-        Job.objects.filter(state="pending", run_after__lte=timezone.now())
-        .annotate(
-            priority=Case(
-                When(kind="validate", then=Value(0)),
-                When(kind="send", then=Value(1)),
-                default=Value(2),
-                output_field=IntegerField(),
-            )
-        )
-        .order_by("priority", "run_after", "id")
+    # Later public intake cannot overtake already accepted work. run_after also
+    # keeps backoff retries behind work that was ready before their retry time.
+    query = Job.objects.filter(state="pending", run_after__lte=timezone.now()).order_by(
+        "run_after", "id"
     )
     if connection.features.has_select_for_update_skip_locked:
         query = query.select_for_update(skip_locked=True)
@@ -76,7 +67,7 @@ def reclaim_stale_jobs():
                     )
                 if job.upload_id:
                     Upload.objects.filter(pk=job.upload_id).update(
-                        state=Upload.State.FAILED, error_code="worker_interrupted"
+                        state=Upload.State.FAILED, error_code="worker_interrupted", reserved_bytes=0
                     )
         job.lease_token, job.lease_until = None, None
         job.save()
@@ -104,33 +95,45 @@ def finish_job(job, state="done", error_code="", delay=0):
 
 def process_validation(job):
     upload = Upload.objects.get(pk=job.upload_id)
-    scan_file(path_for(upload.source_key))
-    result = validate_upload(upload)
     with transaction.atomic():
         if not live_job(job):
             return
-        current = Upload.objects.select_for_update().filter(pk=upload.pk).first()
-        if not current:
-            remove_keys(result["normalized_key"])
-            return
-        current.normalized_key = result["normalized_key"]
-        current.media_type, current.pages, current.state = (
-            result["media_type"],
-            result["pages"],
-            Upload.State.READY,
-        )
-        current.error_code = ""
-        current.save()
-        finish_job(job)
+    scan_file(path_for(upload.source_key))
+    with validate_upload(upload) as result:
+        with transaction.atomic():
+            if not live_job(job):
+                if result["normalized_key"] != upload.source_key:
+                    remove_keys(result["normalized_key"])
+                return
+            current = Upload.objects.select_for_update().filter(pk=upload.pk).first()
+            if not current:
+                if result["normalized_key"] != upload.source_key:
+                    remove_keys(result["normalized_key"])
+                return
+            current.normalized_key = result["normalized_key"]
+            current.media_type, current.pages, current.state = (
+                result["media_type"],
+                result["pages"],
+                Upload.State.READY,
+            )
+            current.error_code = ""
+            current.normalized_size = result["normalized_size"]
+            current.reserved_bytes = 0
+            current.save()
+            finish_job(job)
 
 
 def process_render(job):
-    claim = Claim.objects.get(pk=job.claim_id)
-    if claim.state in {Claim.State.PURGING, Claim.State.PURGED}:
-        finish_job(job, "cancelled")
-        return
-    Claim.objects.filter(pk=claim.pk).update(state=Claim.State.RENDERING)
-    with temporary_workspace() as workspace:
+    with transaction.atomic():
+        if not live_job(job):
+            return
+        claim = Claim.objects.select_for_update().get(pk=job.claim_id)
+        if claim.state in {Claim.State.PURGING, Claim.State.PURGED}:
+            finish_job(job, "cancelled")
+            return
+        claim.state = Claim.State.RENDERING
+        claim.save(update_fields=["state"])
+    with temporary_workspace(claim=claim) as workspace:
         source, result = build_claim_pdf(claim, workspace)
         with transaction.atomic():
             if not live_job(job):
@@ -141,10 +144,10 @@ def process_render(job):
                 return
             # The lease-specific immutable key prevents an old renderer replacing a newer PDF.
             key = f"pdf/{claim.id}/{job.lease_token}.pdf"
-            target = path_for(key)
-            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            os.replace(source, target)
-            sync_directory(target.parent)
+            size, checksum = publish_file(source, key, settings.MAX_FINAL_PDF_BYTES)
+            if checksum != result["checksum"] or size != result["size"]:
+                remove_keys(key)
+                raise ProcessingError("invalid_processing_output")
             claim.pdf_key, claim.pdf_hash, claim.pdf_size, claim.pdf_page_count = (
                 key,
                 result["checksum"],
@@ -214,6 +217,11 @@ def run_one():
         {"validate": process_validation, "render": process_render, "send": process_send}[job.kind](
             job
         )
+    except CapacityError:
+        with transaction.atomic():
+            if live_job(job):
+                finish_job(job, "pending", "storage_capacity", 60)
+        logger.warning("document_capacity_wait job=%s", job.pk)
     except ProcessingError as exc:
         code = str(exc)
         with transaction.atomic():
@@ -229,6 +237,8 @@ def run_one():
                     Upload.objects.filter(pk=job.upload_id).update(
                         state=Upload.State.PENDING if retry else Upload.State.FAILED,
                         error_code=code,
+                        # Scanner retries happen before workspace transfer.
+                        **({"reserved_bytes": 0} if not retry else {}),
                     )
                 if job.claim_id:
                     Claim.objects.filter(pk=job.claim_id).update(
@@ -251,8 +261,8 @@ def run_one():
                     )
                 if job.upload_id:
                     Upload.objects.filter(pk=job.upload_id).update(
-                        state=Upload.State.FAILED, error_code="processing_error"
+                        state=Upload.State.FAILED, error_code="processing_error", reserved_bytes=0
                     )
                 finish_job(job, "failed", "processing_error")
-        logger.error("job_failed job=%s kind=%s", job.pk, job.kind)
+        logger.exception("job_failed job=%s kind=%s", job.pk, job.kind)
     return True

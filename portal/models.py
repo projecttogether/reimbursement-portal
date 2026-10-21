@@ -71,6 +71,10 @@ class DraftAdmission(models.Model):
     key = models.CharField(max_length=64, primary_key=True)
     window_start = models.DateTimeField(default=timezone.now, db_index=True)
     count = models.PositiveIntegerField(default=0)
+    upload_count = models.PositiveIntegerField(default=0)
+    upload_bytes = models.PositiveBigIntegerField(default=0)
+    upload_window_start = models.DateTimeField(default=timezone.now)
+    upload_window_count = models.PositiveIntegerField(default=0)
 
 
 class Draft(models.Model):
@@ -85,6 +89,8 @@ class Draft(models.Model):
         "Claim", on_delete=models.SET_NULL, null=True, blank=True, related_name="accepted_draft"
     )
     payload_hash = models.CharField(max_length=64, blank=True)
+    upload_count = models.PositiveIntegerField(default=0)
+    upload_bytes = models.PositiveBigIntegerField(default=0)
 
 
 class Claim(models.Model):
@@ -166,6 +172,8 @@ class Upload(models.Model):
     original_name = models.CharField(max_length=200)
     source_key = models.CharField(max_length=200)
     normalized_key = models.CharField(max_length=200, blank=True)
+    normalized_size = models.PositiveIntegerField(default=0)
+    reserved_bytes = models.PositiveIntegerField(default=0)
     size = models.PositiveIntegerField()
     checksum = models.CharField(max_length=64)
     media_type = models.CharField(max_length=40, blank=True)
@@ -193,6 +201,7 @@ class DeliveryAttempt(models.Model):
     error_code = models.CharField(max_length=80, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
+    last_checked_at = models.DateTimeField(null=True, blank=True, db_index=True)
 
 
 class DeliveryEvent(models.Model):
@@ -205,6 +214,7 @@ class DeliveryEvent(models.Model):
     provider_timestamp = models.DateTimeField()
     received_at = models.DateTimeField(default=timezone.now)
     applied = models.BooleanField(default=False)
+    last_checked_at = models.DateTimeField(null=True, blank=True, db_index=True)
 
 
 class Job(models.Model):
@@ -240,3 +250,20 @@ class Operation(models.Model):
     actor = models.CharField(max_length=120)
     reason = models.CharField(max_length=500)
     created_at = models.DateTimeField(default=timezone.now)
+
+
+class CapacityLock(models.Model):
+    """One transaction lock serializes admission against the shared filesystem."""
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1)
+
+
+class WorkspaceReservation(models.Model):
+    """A reservation lives until its particular process workspace is removed."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    directory = models.CharField(max_length=200, unique=True)
+    size = models.PositiveIntegerField()
+    upload = models.ForeignKey(Upload, null=True, blank=True, on_delete=models.PROTECT)
+    claim = models.ForeignKey(Claim, null=True, blank=True, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)

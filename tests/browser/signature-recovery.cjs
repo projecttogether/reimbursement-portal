@@ -16,11 +16,11 @@ if (!fixtures)
     args: ["--no-sandbox"],
   });
   const context = await browser.newContext();
-  // Exercise the real 180-poll timeout without waiting six minutes.
+  // Exercise the full delayed-poll window without waiting several minutes.
   await context.addInitScript(() => {
     const original = window.setTimeout.bind(window);
     window.setTimeout = (fn, delay, ...args) =>
-      original(fn, delay === 2000 ? 0 : delay, ...args);
+      original(fn, delay >= 2000 && delay < 15000 ? 0 : delay, ...args);
   });
   const page = await context.newPage();
   const errors = [];
@@ -143,7 +143,26 @@ if (!fixtures)
         1,
         "Replacing failed signatures must remove their server records",
       );
-      assert.equal(await page.locator("#form-error").isVisible(), true);
+      if (failure === "failed") {
+        assert.equal(await page.locator("#form-error").isVisible(), true);
+      } else {
+        assert.equal(await page.locator("#retry-signature").isVisible(), true);
+        const before = signatureCount;
+        signatures()[0].mode = "ready";
+        await page.locator("#retry-signature").click();
+        await page.waitForFunction(
+          () => !document.getElementById("retry-signature").disabled,
+        );
+        assert.equal(
+          signatureCount,
+          before,
+          "Delayed signatures must reuse their upload",
+        );
+        assert.match(
+          await page.locator("#signature-status").innerText(),
+          /geprüft/,
+        );
+      }
     }
     rejectDelete = true;
     await page.locator("#clear-signature").click();
@@ -160,11 +179,9 @@ if (!fixtures)
       () => !document.getElementById("clear-signature").disabled,
     );
     assert.equal(signatures().length, 0);
-    await uploadSignature("ready");
-    assert.match(
-      await page.locator("#signature-status").innerText(),
-      /geprüft/,
-    );
+    await uploadSignature("timeout");
+    const supersededSignature = signatures()[0].id;
+    signatures()[0].mode = "ready";
 
     const canvas = page.locator("#signature-canvas");
     await canvas.scrollIntoViewIfNeeded();
@@ -174,9 +191,33 @@ if (!fixtures)
     await page.mouse.move(bounds.x + 120, bounds.y + 20, { steps: 5 });
     await page.mouse.move(bounds.x + 240, bounds.y + 90, { steps: 5 });
     await page.mouse.up();
+    assert.equal(
+      await page.locator("#retry-signature").isVisible(),
+      false,
+      "Drawing a replacement must invalidate polling the old signature",
+    );
+    // A queued click for the obsolete upload must also be harmless.
+    await page.evaluate(() =>
+      document.getElementById("retry-signature").click(),
+    );
+    await page.waitForFunction(
+      () => !document.getElementById("signature-file").disabled,
+    );
     await page.locator("#declaration").check();
     await page.locator("#privacy_acknowledged").check();
-    for (const failure of ["failed", "network", "timeout", "ready"]) {
+    for (const [index, failure] of [
+      "failed",
+      "network",
+      "timeout",
+      "ready",
+    ].entries()) {
+      // A changed drawing deliberately replaces the preceding signature.
+      if (index) {
+        await page.mouse.move(bounds.x + 50, bounds.y + 90);
+        await page.mouse.down();
+        await page.mouse.move(bounds.x + 120, bounds.y + 40, { steps: 3 });
+        await page.mouse.up();
+      }
       mode = failure;
       const response = page.waitForResponse(
         (result) =>
@@ -193,8 +234,18 @@ if (!fixtures)
         1,
         "Drawing retries must replace the previous server record",
       );
+      if (["network", "timeout"].includes(failure)) {
+        const before = signatureCount;
+        signatures()[0].mode = "ready";
+        await page.locator("#retry-signature").click();
+        await page.waitForFunction(
+          () => !document.getElementById("retry-signature").disabled,
+        );
+        assert.equal(signatureCount, before);
+      }
     }
     assert.equal(submitted.signature, signatures()[0].id);
+    assert.notEqual(submitted.signature, supersededSignature);
     assert.equal(signatureCount, 10);
     assert.equal(quotaRejections, 0);
     assert.deepEqual(errors, []);
@@ -208,6 +259,7 @@ if (!fixtures)
         pollingTimeout: true,
         busyDeletionRetry: true,
         drawnRetrySubmission: true,
+        obsoleteSignatureCannotRevive: true,
       }),
     );
   } finally {
