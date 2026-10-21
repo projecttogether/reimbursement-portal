@@ -25,4 +25,4 @@ RUN DJANGO_DEBUG=1 DEPLOYMENT_ENV=development uv run --no-sync python manage.py 
 USER portal
 ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8000
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "90", "--access-logfile", "-", "--access-logformat", "request=%({x-request-id}o)s method=%(m)s status=%(s)s duration=%(L)s"]
+CMD ["sh", "/app/scripts/start-web.sh"]

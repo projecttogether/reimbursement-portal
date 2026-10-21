@@ -2,9 +2,16 @@
 
 ## Configure and launch
 
+For multiple cost centers/domains, follow [Coolify deployment](coolify.md).
+Deploy the shared backend once and a separate web resource per domain. Each web
+resource uses `EVENT_*` environment variables and synchronizes its event on startup;
+no event JSON or terminal configuration is needed. PostgreSQL, files, ClamAV,
+the single worker, and one MailerSend webhook are shared on the same Docker host.
+
 Use the selected PT application's existing Coolify/TLS proxy. Expose only the web
-service. Do not publish PostgreSQL, ClamAV, worker, or storage ports. Keep the
-Compose host port on loopback, or remove the port mapping when Coolify routes
+and dedicated webhook HTTP services. Do not publish PostgreSQL, ClamAV, worker,
+or storage ports. Keep the Compose host port on loopback, or remove the port
+mapping when Coolify routes
 directly to the container. Do not add a second reverse proxy.
 
 For production set `DJANGO_DEBUG=0`, a random `DJANGO_SECRET_KEY`, production
@@ -20,8 +27,9 @@ proxy replaces forwarded protocol headers. Configure:
 - Persistent encrypted database/private storage volumes and an independent,
   encrypted off-host backup destination. Backup keys remain outside Git.
 
-Create an event JSON from `examples/event.json`, fill its KST/KTR, approved
-recipient, Finance contact, privacy notice/version, dates/deadline, and set
+For the original combined deployment, create an event JSON from
+`examples/event.json`, fill its KST/KTR, approved recipient, Finance contact,
+privacy notice/version, dates/deadline, and set
 `active=true`. Do not use placeholder text or the demo notice with real data.
 
 ```bash
@@ -32,10 +40,12 @@ docker compose run --rm -v /approved/event.json:/tmp/event.json:ro web \
 docker compose up -d web worker
 ```
 
-Configuration updates increment the event revision. Unsubmitted forms from an
-older revision must reload and review again; accepted claims keep their original
-configuration snapshot. Stop web and worker before migrations, then replace both
-with the new image. Old workers must not create reservations during this upgrade.
+Configuration changes increment the event revision; unchanged restarts do not.
+Unsubmitted forms from an older revision must reload and review again; accepted
+claims keep their original
+configuration snapshot. Stop every web resource and the shared worker before
+migrations, then replace all with the new image. Old workers must not create
+reservations during this upgrade.
 Only one worker process is supported operationally; its queue uses row locks and
 leases and acquires ready jobs in FIFO order across validation, rendering and
 sending. Later uploads cannot indefinitely overtake accepted claims.

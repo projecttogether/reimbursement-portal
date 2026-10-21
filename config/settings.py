@@ -11,6 +11,12 @@ from portal.constants import MAX_PDF_PAGES as MAX_PDF_PAGES
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEBUG = os.getenv("DJANGO_DEBUG", "0") == "1"
 DEPLOYMENT_ENV = os.getenv("DEPLOYMENT_ENV", "development" if DEBUG else "production")
+PORTAL_ROLE = os.getenv("PORTAL_ROLE", "standalone")
+EVENT_SLUG = os.getenv("EVENT_SLUG", "").strip()
+if PORTAL_ROLE not in {"standalone", "web", "webhook", "worker"}:
+    raise ImproperlyConfigured("PORTAL_ROLE must be standalone, web, webhook, or worker.")
+if PORTAL_ROLE == "web" and not EVENT_SLUG:
+    raise ImproperlyConfigured("A web service requires EVENT_SLUG.")
 if DEPLOYMENT_ENV not in {"development", "staging", "production"} or DEBUG != (
     DEPLOYMENT_ENV == "development"
 ):
@@ -32,6 +38,7 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "portal.middleware.RequestLimitsMiddleware",
+    "portal.middleware.EventScopeMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -99,8 +106,11 @@ MAX_UPLOADS_PER_NETWORK = int(os.getenv("MAX_UPLOADS_PER_NETWORK", "60000"))
 MAX_UPLOAD_BYTES_PER_NETWORK = int(os.getenv("MAX_UPLOAD_BYTES_PER_NETWORK", "45000000000"))
 MAX_UPLOADS_PER_NETWORK_PER_MINUTE = int(os.getenv("MAX_UPLOADS_PER_NETWORK_PER_MINUTE", "3000"))
 MAX_PENDING_VALIDATIONS = int(os.getenv("MAX_PENDING_VALIDATIONS", "1000"))
-# Two synchronous web workers may each be spooling a maximum-sized request.
-UPLOAD_TEMP_HEADROOM_BYTES = 2 * (MAX_RECEIPT_BYTES + 128_000)
+# Include the synchronous workers across every web resource sharing this storage.
+TOTAL_WEB_WORKERS = int(os.getenv("TOTAL_WEB_WORKERS", "2"))
+if TOTAL_WEB_WORKERS < 1:
+    raise ImproperlyConfigured("TOTAL_WEB_WORKERS must be a positive integer.")
+UPLOAD_TEMP_HEADROOM_BYTES = TOTAL_WEB_WORKERS * (MAX_RECEIPT_BYTES + 128_000)
 DOCUMENT_SANDBOX_ENABLED = os.getenv("DOCUMENT_SANDBOX_ENABLED", "1") == "1"
 MAX_JOB_AGE_SECONDS = int(os.getenv("MAX_JOB_AGE_SECONDS", "900"))
 REQUIRE_WORKER_HEARTBEAT = os.getenv("REQUIRE_WORKER_HEARTBEAT", "1" if not DEBUG else "0") == "1"
@@ -162,12 +172,14 @@ if not DEBUG:
         "DJANGO_SECRET_KEY",
         "DATABASE_URL",
         "ALLOWED_HOSTS",
-        "MAILERSEND_API_TOKEN",
-        "MAILERSEND_WEBHOOK_SIGNING_SECRET",
-        "MAIL_FROM_ADDRESS",
-        "APPROVED_DELIVERY_RECIPIENTS",
         "HEALTHCHECK_TOKEN",
     ]
+    if PORTAL_ROLE in {"standalone", "worker"}:
+        required += ["MAILERSEND_API_TOKEN", "MAIL_FROM_ADDRESS"]
+    if PORTAL_ROLE in {"standalone", "webhook"}:
+        required += ["MAILERSEND_WEBHOOK_SIGNING_SECRET"]
+    if PORTAL_ROLE in {"standalone", "worker", "web"}:
+        required += ["APPROVED_DELIVERY_RECIPIENTS"]
     missing = [key for key in required if not os.getenv(key)]
     if (
         missing

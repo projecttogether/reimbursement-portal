@@ -19,6 +19,23 @@ docker compose up -d web worker
 Open <http://localhost:8000/forms/demo/> and use dummy data. Emails are captured
 locally. ClamAV's first startup can take several minutes.
 
+## Deploy with Coolify
+
+Deploy one shared backend using `compose.coolify.yaml` and `.env.coolify.example`.
+It owns PostgreSQL, ClamAV, the single worker, migrations, and the MailerSend
+webhook. Deploy a separate web resource per domain using `compose.coolify.web.yaml`
+and `.env.coolify.web.example`, with each cost center configured through `EVENT_*`
+environment variables. Web startup creates or updates its event automatically.
+
+All resources share one database, private storage volume, and Docker network on
+the same host. Each domain serves only its configured event. The backend's single
+signed MailerSend webhook updates deliveries across all events.
+
+Follow the [Coolify deployment steps](docs/coolify.md). For upgrades, stop all web
+resources and the shared worker before migrations, and keep every persistent
+volume. The backend's `exclude_from_hc` field is a Coolify extension; use
+`compose.yaml` for the original local Docker Compose setup.
+
 ## Local CI
 
 ```bash
