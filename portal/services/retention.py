@@ -15,7 +15,8 @@ from portal.models import (
     Upload,
     WorkspaceReservation,
 )
-from portal.services.documents import ProcessingError, remove_abandoned_workspace
+from portal.services.capacity import recover_abandoned_workspaces
+from portal.services.documents import ProcessingError
 from portal.services.storage import outbox_key, remove_keys, sweep_orphans
 
 logger = logging.getLogger(__name__)
@@ -172,8 +173,5 @@ class StoredOwners:
 
 
 def orphan_cleanup():
-    for reservation in WorkspaceReservation.objects.filter(
-        created_at__lt=timezone.now() - timedelta(seconds=settings.JOB_LEASE_SECONDS)
-    ):
-        remove_abandoned_workspace(reservation)
+    recover_abandoned_workspaces()
     sweep_orphans(timezone.now() - timedelta(hours=24), StoredOwners())

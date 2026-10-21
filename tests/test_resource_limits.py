@@ -6,7 +6,6 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -28,7 +27,7 @@ from portal.models import (
     Upload,
     WorkspaceReservation,
 )
-from portal.services.documents import temporary_workspace
+from portal.services.capacity import temporary_workspace
 from portal.services.retention import cleanup
 from portal.services.storage import path_for
 from tests.conftest import image_bytes
@@ -166,7 +165,7 @@ def test_workspace_cleanup_failure_keeps_reservation(prepared, monkeypatch):
     item = Upload.objects.get(pk=response.json()["id"])
     with monkeypatch.context() as patch:
         patch.setattr(
-            "portal.services.documents.shutil.rmtree",
+            "portal.services.capacity.shutil.rmtree",
             lambda path: (_ for _ in ()).throw(OSError("synthetic")),
         )
         with pytest.raises(OSError):
@@ -233,7 +232,7 @@ def test_validation_reservation_survives_until_metadata_publication(prepared, mo
 
 
 @pytest.mark.django_db(transaction=True)
-def test_competing_drafts_cannot_reserve_the_same_last_space(event, settings, monkeypatch):
+def test_competing_drafts_cannot_reserve_the_same_last_space(event, settings, fake_disk):
     if connection.vendor != "postgresql":
         pytest.skip("Concurrent row locking requires PostgreSQL")
     CapacityLock.objects.get_or_create(pk=1)
@@ -244,9 +243,7 @@ def test_competing_drafts_cannot_reserve_the_same_last_space(event, settings, mo
     free = (
         settings.UPLOAD_TEMP_HEADROOM_BYTES + settings.MAX_NORMALIZED_FILE_BYTES + len(content) * 2
     )
-    monkeypatch.setattr(
-        "portal.services.capacity.shutil.disk_usage", lambda path: SimpleNamespace(free=free)
-    )
+    fake_disk(free)
 
     def submit(client):
         close_old_connections()

@@ -51,10 +51,6 @@ def path_for(key):
     return target
 
 
-def storage_available():
-    return shutil.disk_usage(settings.PRIVATE_STORAGE_ROOT).free >= settings.MIN_FREE_STORAGE_BYTES
-
-
 def save_upload(file, key, limit):
     target = path_for(key)
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

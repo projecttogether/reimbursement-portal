@@ -8,11 +8,11 @@ from PIL import Image
 from pypdf import PdfWriter
 
 from portal.file_worker import DocumentError, build_pdf, receipt_images
+from portal.services.capacity import temporary_workspace
 from portal.services.documents import (
     assemble_pdf,
     build_claim_pdf,
     inspect_upload,
-    temporary_workspace,
 )
 
 pytestmark = pytest.mark.django_db

@@ -15,7 +15,7 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 
 from portal.forms import ClaimForm
 from portal.models import Claim, Draft, Event, Job, Upload, WorkspaceReservation
-from portal.services.capacity import CapacityError, admit_upload
+from portal.services.capacity import CapacityError, admit_upload, storage_available
 from portal.services.delivery import ingest_event
 from portal.services.mailersend import verify_webhook
 from portal.services.readiness import dependencies
@@ -23,7 +23,6 @@ from portal.services.storage import (
     check_writable,
     remove_keys,
     save_upload,
-    storage_available,
     upload_source_key,
 )
 from portal.services.submissions import (

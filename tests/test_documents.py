@@ -11,7 +11,8 @@ from pypdf.generic import ArrayObject, DictionaryObject, FloatObject, NameObject
 from portal.file_worker import DocumentError, build_pdf, validate_file
 from portal.jobs import run_one
 from portal.models import Claim, Job
-from portal.services.documents import build_claim_pdf, temporary_workspace
+from portal.services.capacity import temporary_workspace
+from portal.services.documents import build_claim_pdf
 from tests.conftest import camera_jpeg_bytes, image_bytes
 
 pytestmark = pytest.mark.django_db

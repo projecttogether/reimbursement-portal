@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import uuid
+from pathlib import Path
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -26,6 +27,29 @@ def local_settings(settings, tmp_path):
     settings.MIN_FREE_STORAGE_BYTES = 0
     settings.APPROVED_DELIVERY_RECIPIENTS = ["finance@example.invalid"]
     settings.TEST_RECIPIENT_ALLOWLIST = []
+
+
+class FakeDisk:
+    """A fixed-size disk adapter. `workspace_free` models a separate tmpfs at private/work."""
+
+    def __init__(self, free, *, workspace_free=None):
+        self.free_bytes, self.workspace_free = free, workspace_free
+
+    def free(self, path):
+        if self.workspace_free is not None and Path(path).name == "work":
+            return self.workspace_free
+        return self.free_bytes
+
+    def shared(self, path, root):
+        return self.workspace_free is None
+
+
+@pytest.fixture
+def fake_disk(monkeypatch):
+    def install(free, **options):
+        monkeypatch.setattr("portal.services.capacity.disk", FakeDisk(free, **options))
+
+    return install
 
 
 @pytest.fixture

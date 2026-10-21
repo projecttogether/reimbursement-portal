@@ -8,14 +8,9 @@ from django.db import connection, transaction
 from django.utils import timezone
 
 from portal.models import Claim, Delivery, DeliveryAttempt, Job, Upload
-from portal.services.capacity import CapacityError
+from portal.services.capacity import CapacityError, release_upload, temporary_workspace
 from portal.services.delivery import reconcile_unmatched, update_delivery
-from portal.services.documents import (
-    ProcessingError,
-    build_claim_pdf,
-    temporary_workspace,
-    validate_upload,
-)
+from portal.services.documents import ProcessingError, build_claim_pdf, validate_upload
 from portal.services.mailersend import send_pdf
 from portal.services.scanner import ScanError, scan_file
 from portal.services.storage import claim_pdf_key, path_for, publish_file, remove_keys
@@ -66,8 +61,9 @@ def reclaim_stale_jobs():
                         state=Claim.State.FAILED, error_code="worker_interrupted"
                     )
                 if job.upload_id:
+                    release_upload(job.upload_id)
                     Upload.objects.filter(pk=job.upload_id).update(
-                        state=Upload.State.FAILED, error_code="worker_interrupted", reserved_bytes=0
+                        state=Upload.State.FAILED, error_code="worker_interrupted"
                     )
         job.lease_token, job.lease_until = None, None
         job.save()
@@ -118,8 +114,8 @@ def process_validation(job):
             )
             current.error_code = ""
             current.normalized_size = result["normalized_size"]
-            current.reserved_bytes = 0
             current.save()
+            release_upload(current.pk)
             finish_job(job)
 
 
@@ -236,9 +232,10 @@ def run_one():
                     Upload.objects.filter(pk=job.upload_id).update(
                         state=Upload.State.PENDING if retry else Upload.State.FAILED,
                         error_code=code,
-                        # Scanner retries happen before workspace transfer.
-                        **({"reserved_bytes": 0} if not retry else {}),
                     )
+                    # Scanner retries happen before workspace transfer and keep it.
+                    if not retry:
+                        release_upload(job.upload_id)
                 if job.claim_id:
                     Claim.objects.filter(pk=job.claim_id).update(
                         state=Claim.State.FAILED, error_code=code
@@ -259,8 +256,9 @@ def run_one():
                         state=Claim.State.FAILED, error_code="processing_error"
                     )
                 if job.upload_id:
+                    release_upload(job.upload_id)
                     Upload.objects.filter(pk=job.upload_id).update(
-                        state=Upload.State.FAILED, error_code="processing_error", reserved_bytes=0
+                        state=Upload.State.FAILED, error_code="processing_error"
                     )
                 finish_job(job, "failed", "processing_error")
         logger.exception("job_failed job=%s kind=%s", job.pk, job.kind)

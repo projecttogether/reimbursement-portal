@@ -1,9 +1,7 @@
 import contextlib
-import fcntl
 import json
 import os
 import resource
-import shutil
 import signal
 import subprocess
 import sys
@@ -12,19 +10,10 @@ from functools import lru_cache
 from pathlib import Path
 
 from django.conf import settings
-from django.db import transaction
 from django.template.loader import render_to_string
 
-from portal.models import Upload, WorkspaceReservation
-from portal.services.capacity import (
-    CapacityError,
-    check_storage,
-    lock_storage,
-    total,
-    workspace_uses_private_storage,
-)
+from portal.services.capacity import temporary_workspace, workspace_lock
 from portal.services.storage import (
-    new_workspace_key,
     normalized_upload_key,
     path_for,
     publish_file,
@@ -239,84 +228,3 @@ def build_claim_pdf(claim, workspace):
     output_path = Path(workspace) / "complete.pdf"
     result = assemble_pdf(manifest_path, output_path)
     return output_path, result
-
-
-@contextlib.contextmanager
-def workspace_lock(directory, *, exclusive=False):
-    directory = Path(directory)
-    locks = directory.parent / ".locks"
-    locks.mkdir(exist_ok=True, mode=0o700)
-    # Outside the parser's writable subtree, so it cannot unlink/replace the lock.
-    lock_path = locks / directory.name
-    with lock_path.open("a+b") as handle:
-        operation = fcntl.LOCK_EX | fcntl.LOCK_NB if exclusive else fcntl.LOCK_SH
-        fcntl.flock(handle, operation)
-        yield handle
-
-
-def remove_abandoned_workspace(reservation):
-    directory = path_for(reservation.directory)
-    directory.parent.mkdir(exist_ok=True, mode=0o700)
-    try:
-        with workspace_lock(directory, exclusive=True):
-            if directory.exists():
-                shutil.rmtree(directory)
-            with transaction.atomic():
-                lock_storage()
-                if reservation.upload_id:
-                    current = Upload.objects.select_for_update().get(pk=reservation.upload_id)
-                    if (
-                        current.state == Upload.State.PENDING
-                        and not WorkspaceReservation.objects.filter(upload=current)
-                        .exclude(pk=reservation.pk)
-                        .exists()
-                    ):
-                        # A crashed validator still owes its admitted output capacity.
-                        current.reserved_bytes = max(
-                            current.reserved_bytes, reservation.output_bytes
-                        )
-                        current.save(update_fields=["reserved_bytes"])
-                reservation.delete()
-            (directory.parent / ".locks" / directory.name).unlink(missing_ok=True)
-        return True
-    except BlockingIOError:
-        # An expired job lease does not prove that its parser has stopped.
-        return False
-
-
-@contextlib.contextmanager
-def temporary_workspace(*, upload=None, claim=None):
-    root = workspace_root()
-    root.mkdir(exist_ok=True, mode=0o700)
-    key = new_workspace_key()
-    directory = path_for(key)
-    size = settings.MAX_NORMALIZED_FILE_BYTES if upload else settings.MAX_RENDER_WORKSPACE_BYTES
-    output_size = settings.MAX_NORMALIZED_FILE_BYTES if upload else settings.MAX_FINAL_PDF_BYTES
-    persistent_size = output_size + (size if workspace_uses_private_storage() else 0)
-    reservation = None
-    with workspace_lock(directory):
-        try:
-            with transaction.atomic():
-                # Transfer pending upload capacity into an execution-specific reservation.
-                check_storage(0)
-                current = Upload.objects.select_for_update().get(pk=upload.pk) if upload else None
-                check_storage(max(0, persistent_size - (current.reserved_bytes if current else 0)))
-                if (
-                    shutil.disk_usage(root).free
-                    < total(WorkspaceReservation.objects.all(), "size") + size
-                ):
-                    raise CapacityError("workspace_capacity")
-                reservation = WorkspaceReservation.objects.create(
-                    directory=key, size=size, output_bytes=output_size, upload=upload, claim=claim
-                )
-                if current:
-                    current.reserved_bytes = 0
-                    current.save(update_fields=["reserved_bytes"])
-                directory.mkdir(mode=0o700)
-            yield str(directory)
-        finally:
-            if directory.exists():
-                shutil.rmtree(directory)
-            if reservation:
-                reservation.delete()
-            (root / ".locks" / directory.name).unlink(missing_ok=True)
