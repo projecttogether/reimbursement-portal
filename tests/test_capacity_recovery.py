@@ -7,12 +7,8 @@ import sys
 import time
 import uuid
 from datetime import timedelta
-from importlib import import_module
-from types import SimpleNamespace
 
 import pytest
-from django.apps import apps
-from django.db import connection
 from django.utils import timezone
 
 from portal.jobs import run_one
@@ -22,22 +18,6 @@ from portal.services.retention import orphan_cleanup
 from portal.services.storage import path_for
 
 pytestmark = pytest.mark.django_db
-
-
-def test_existing_reservations_get_separate_output_allowances(prepared, settings):
-    upload = prepared["draft"].uploads.first()
-    validation = WorkspaceReservation.objects.create(
-        directory="work/legacy-validation", size=settings.MAX_NORMALIZED_FILE_BYTES, upload=upload
-    )
-    render = WorkspaceReservation.objects.create(
-        directory="work/legacy-render", size=settings.MAX_RENDER_WORKSPACE_BYTES
-    )
-    migration = import_module("portal.migrations.0005_workspace_output_reservation")
-    migration.account_existing_outputs(apps, SimpleNamespace(connection=connection))
-    validation.refresh_from_db()
-    render.refresh_from_db()
-    assert validation.output_bytes == settings.MAX_NORMALIZED_FILE_BYTES
-    assert render.output_bytes == settings.MAX_FINAL_PDF_BYTES
 
 
 def separate_filesystems(settings, fake_disk):

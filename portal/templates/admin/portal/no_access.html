@@ -1,0 +1,14 @@
+{% extends "admin/base_site.html" %}
+{% block title %}Kein Zugriff | Erstattungsportal{% endblock %}
+{% block content %}
+<div id="content-main">
+{% if unconfigured %}
+<h1>Anmeldung nicht verfügbar</h1>
+<p>Die Anmeldung mit PT Login ist für diese Umgebung nicht eingerichtet.</p>
+{% else %}
+<h1>Kein Zugriff</h1>
+<p>Dein PT-Login-Konto ist nicht für die Verwaltung des Erstattungsportals freigeschaltet.
+Bitte wende dich an das IT-Team, wenn du Formulare anlegen möchtest.</p>
+{% endif %}
+</div>
+{% endblock %}

@@ -22,7 +22,7 @@ def test_scanner_outage_retries_with_backoff_then_fails_and_releases(
 ):
     unreachable_scanner(settings)
     response = prepared["client"].post(
-        "/forms/test/uploads/",
+        "/f/test/uploads/",
         {
             "draft_id": str(prepared["draft"].id),
             "token": prepared["data"]["token"],

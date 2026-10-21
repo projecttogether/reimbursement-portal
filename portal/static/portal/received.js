@@ -1,25 +1,17 @@
 "use strict";
 (() => {
   const target = document.getElementById("processing-status");
+  // Participants see three outcomes; the detailed states stay internal.
+  const processing = "Dein Antrag wird verarbeitet und an Finance übermittelt.";
+  const problem =
+    "Bei der Verarbeitung ist ein Problem aufgetreten. Dein Antrag bleibt gespeichert; bitte reiche ihn nicht erneut ein, sondern melde dich mit deiner Referenz.";
   const messages = {
-    received: "Dein Antrag wartet auf die PDF-Erstellung.",
-    rendering: "Deine PDF wird erstellt.",
-    ready: "Deine PDF ist fertig und wartet auf den Versand.",
-    pending: "Deine PDF wartet auf den Versand.",
-    sending: "Deine PDF wird versendet.",
-    provider_accepted: "Die E-Mail wurde vom Versanddienst angenommen.",
-    delivered:
-      "Deine PDF wurde an den Mailserver des Finance-Postfachs zugestellt.",
-    paused: "Der Versand ist verzögert. Dein Antrag bleibt gespeichert.",
-    send_unknown:
-      "Der Versandstatus wird geprüft. Dein Antrag bleibt gespeichert; bitte reiche ihn nicht erneut ein.",
-    delivery_failed:
-      "Beim Versand ist ein Problem aufgetreten. Bitte kontaktiere uns mit deiner Referenz.",
-    processing_failed:
-      "Bei der PDF-Erstellung ist ein Problem aufgetreten. Bitte kontaktiere uns mit deiner Referenz.",
+    delivered: "Dein Antrag wurde an Finance übermittelt.",
+    delivery_failed: problem,
+    processing_failed: problem,
   };
   function show(state) {
-    target.textContent = messages[state] || "Dein Antrag wird verarbeitet.";
+    target.textContent = messages[state] || processing;
   }
   show(target.dataset.status);
   let polls = 0;

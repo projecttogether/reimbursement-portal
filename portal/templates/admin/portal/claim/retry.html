@@ -1,0 +1,16 @@
+{% extends "admin/base_site.html" %}
+{% block breadcrumbs %}<div class="breadcrumbs"><a href="{% url 'admin:index' %}">Start</a> › <a href="{% url 'admin:portal_claim_changelist' %}">Anträge</a> › <a href="{% url 'admin:portal_claim_change' claim.pk %}">{{ claim.reference }}</a> › Erneut verarbeiten</div>{% endblock %}
+{% block content %}
+<div id="content-main">
+<p>Antrag <strong>{{ claim.reference }}</strong> ({{ claim.form.name }}) · aktueller Status: <strong>{{ status }}</strong></p>
+<p>Eine fehlgeschlagene PDF-Erstellung wird neu gestartet. Eine erstellte PDF wird erneut an das Empfangspostfach gesendet.</p>
+{% if duplicate_risk %}<p class="errornote">Der letzte Versand ist nicht eindeutig fehlgeschlagen. Prüfe im Versanddienst oder bei Finance, ob die E-Mail angekommen ist, bevor du sie erneut sendest.</p>{% endif %}
+<form method="post">{% csrf_token %}
+{% if form.non_field_errors %}<p class="errornote">{{ form.non_field_errors|join:" " }}</p>{% endif %}
+<fieldset class="module aligned">
+{% for field in form %}<div class="form-row">{{ field.errors }}<div class="flex-container">{% if field.name == "acknowledge_duplicate_risk" %}{{ field }} <label class="vCheckboxLabel" for="{{ field.id_for_label }}">{{ field.label }}</label>{% else %}{{ field.label_tag }} {{ field }}{% endif %}</div></div>{% endfor %}
+</fieldset>
+<div class="submit-row"><input type="submit" value="Erneut verarbeiten" class="default"></div>
+</form>
+</div>
+{% endblock %}

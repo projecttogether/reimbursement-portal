@@ -11,7 +11,7 @@ trap '"${capacity_compose[@]}" unpause worker >/dev/null 2>&1 || true; "${capaci
 "${capacity_compose[@]}" build web
 "${capacity_compose[@]}" up -d database
 "${capacity_compose[@]}" run --rm web python manage.py migrate --noinput
-"${capacity_compose[@]}" run --rm web python manage.py configure_event --demo
+"${capacity_compose[@]}" run --rm web python manage.py seed_demo
 "${capacity_compose[@]}" up -d web worker
 "${capacity_compose[@]}" run --rm load python scripts/capacity_check.py "${1:-250}" > "$capacity_output/capacity.json" &
 capacity_load_pid=$!

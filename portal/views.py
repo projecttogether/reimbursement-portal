@@ -5,16 +5,17 @@ from functools import wraps
 from django.conf import settings
 from django.db import connection
 from django.http import Http404, JsonResponse
-from django.shortcuts import get_object_or_404, redirect, render
+from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from portal import intake
-from portal.forms import ClaimForm
+from portal.forms import SEPA_COUNTRIES, ClaimForm
 from portal.intake import IntakeError
-from portal.models import Claim, Event
+from portal.models import Claim, Form, PrivacyNotice
+from portal.roles import is_form_editor, is_template_admin
 from portal.services import delivery, uploads
 from portal.services.capacity import storage_available
 from portal.services.drafts import get_or_create_draft, session_hash
@@ -37,69 +38,88 @@ def api_errors(view):
     return wrapped
 
 
+def can_preview(user, form):
+    return is_form_editor(user) and (
+        is_template_admin(user) or form.owners.filter(pk=user.pk).exists()
+    )
+
+
 @require_GET
 def index(request):
-    if settings.PORTAL_ROLE == "web":
-        return event_form(request, event_slug=settings.EVENT_SLUG)
-    events = [event for event in Event.objects.filter(active=True) if event.is_open()]
-    if len(events) == 1:
-        return redirect("event_form", event_slug=events[0].slug)
-    return render(request, "portal/index.html", {"events": events})
+    return render(request, "portal/index.html")
+
+
+@require_GET
+def privacy(request):
+    return render(request, "portal/privacy.html", {"notice": PrivacyNotice.current()})
 
 
 @require_GET
 @ensure_csrf_cookie
-def event_form(request, event_slug):
-    if settings.PORTAL_ROLE == "web" and request.path_info != "/":
-        url = reverse("index")
-        query = request.META.get("QUERY_STRING", "")
-        return redirect(f"{url}?{query}" if query else url)
-    event = get_object_or_404(Event, slug=event_slug)
-    if not event.is_open():
-        return render(request, "portal/closed.html", {"event": event}, status=403)
-    if request.GET.get("new") == "1":
-        request.session.pop(f"draft:{event.slug}", None)
-    try:
-        draft, token = get_or_create_draft(request, event)
-    except IntakeError as exc:
+def form_page(request, form_slug):
+    form = get_object_or_404(Form.objects.select_related("template"), slug=form_slug)
+    # Owners can look at a form before it opens; nothing can be uploaded or submitted.
+    preview = not form.is_open() and can_preview(request.user, form)
+    if not form.is_open() and not preview:
+        return render(request, "portal/closed.html", {"form": form}, status=403)
+    notice = PrivacyNotice.current()
+    if notice is None:
         return render(
             request,
             "portal/closed.html",
-            {"event": event, "message": exc.message},
-            status=exc.status,
+            {"form": form, "message": "Das Formular ist derzeit nicht verfügbar."},
+            status=503,
         )
-    if draft.claim_id:
-        return redirect("received", claim_id=draft.claim_id)
-    form = ClaimForm(
-        event=event, initial={"trip_start": event.trip_start, "trip_end": event.trip_end}
+    draft, token = None, ""
+    if not preview:
+        try:
+            draft, token = get_or_create_draft(request, form)
+        except IntakeError as exc:
+            return render(
+                request,
+                "portal/closed.html",
+                {"form": form, "message": exc.message},
+                status=exc.status,
+            )
+    template = form.template
+    claim_form = ClaimForm(
+        form=form, initial={"trip_start": form.trip_start, "trip_end": form.trip_end}
     )
     configuration = {
-        "draft_id": str(draft.id),
+        "draft_id": str(draft.id) if draft else "",
         "token": token,
-        "config_version": draft.config_version,
-        "currencies": event.allowed_currencies,
-        "upload_url": reverse("upload", kwargs={"event_slug": event.slug}),
-        "submit_url": reverse("submit", kwargs={"event_slug": event.slug}),
-        **intake.client_config(event.allowed_currencies),
+        "config_version": draft.config_version if draft else form.config_version,
+        "preview": preview,
+        "sepa_countries": sorted(SEPA_COUNTRIES),
+        "travel": template.travel,
+        "mileage_rate": str(template.mileage_rate) if template.mileage_enabled else None,
+        "purpose_options": bool(form.purpose_choices()),
+        "upload_url": reverse("upload", kwargs={"form_slug": form.slug}),
+        "submit_url": reverse("submit", kwargs={"form_slug": form.slug}),
+        **intake.client_config(),
     }
     return render(
         request,
         "portal/form.html",
         {
-            "event": event,
             "form": form,
+            "template": template,
+            "claim_form": claim_form,
+            "privacy_notice": notice,
             "configuration": configuration,
             "intake_messages": intake.messages(),
             "amount_pattern": intake.AMOUNT_PATTERN,
             "field_lengths": intake.EXPENSE_FIELD_LENGTHS,
+            "max_distance_km": intake.MAX_DISTANCE_KM,
             "development": settings.DEBUG,
+            "preview": preview,
         },
     )
 
 
 @require_POST
 @api_errors
-def upload(request, event_slug):
+def upload(request, form_slug):
     if not storage_available():
         raise IntakeError("Der Upload ist vorübergehend nicht verfügbar.", status=503)
     # Parsing the body sets the flag when the bounded upload handler stopped it.
@@ -108,7 +128,7 @@ def upload(request, event_slug):
         raise IntakeError(intake.message("receipt_too_large"), status=413)
     item = uploads.accept(
         request,
-        event_slug,
+        form_slug,
         file=file,
         kind=request.POST.get("kind", "receipt"),
         expense_id=request.POST.get("expense_id"),
@@ -122,10 +142,10 @@ def upload(request, event_slug):
             "name": item.original_name,
             "size": item.size,
             "status_url": reverse(
-                "upload_status", kwargs={"event_slug": event_slug, "upload_id": item.id}
+                "upload_status", kwargs={"form_slug": form_slug, "upload_id": item.id}
             ),
             "delete_url": reverse(
-                "upload_remove", kwargs={"event_slug": event_slug, "upload_id": item.id}
+                "upload_remove", kwargs={"form_slug": form_slug, "upload_id": item.id}
             ),
         },
         status=202,
@@ -133,22 +153,22 @@ def upload(request, event_slug):
 
 
 @require_GET
-def upload_status(request, event_slug, upload_id):
-    return JsonResponse(uploads.status(uploads.owned(request, event_slug, upload_id)))
+def upload_status(request, form_slug, upload_id):
+    return JsonResponse(uploads.status(uploads.owned(request, form_slug, upload_id)))
 
 
 @require_http_methods(["DELETE"])
 @api_errors
-def upload_remove(request, event_slug, upload_id):
-    uploads.discard(request, event_slug, upload_id)
+def upload_remove(request, form_slug, upload_id):
+    uploads.discard(request, form_slug, upload_id)
     return JsonResponse({"removed": True})
 
 
 @require_POST
 @api_errors
-def submit(request, event_slug):
+def submit(request, form_slug):
     data = json.loads(request.body)
-    claim = submit_claim(request, event_slug, data)
+    claim = submit_claim(request, form_slug, data)
     return JsonResponse(
         {
             "reference": claim.reference,
@@ -160,11 +180,10 @@ def submit(request, event_slug):
 
 @require_GET
 def received(request, claim_id):
-    claims = Claim.objects.all()
-    if settings.PORTAL_ROLE == "web":
-        claims = claims.filter(event__slug=settings.EVENT_SLUG)
     claim = get_object_or_404(
-        claims, pk=claim_id, accepted_draft__session_hash=session_hash(request)
+        Claim.objects.select_related("form"),
+        pk=claim_id,
+        accepted_draft__session_hash=session_hash(request),
     )
     status, final = delivery.participant_status(claim)
     if request.GET.get("format") == "json":
@@ -172,7 +191,7 @@ def received(request, claim_id):
     return render(
         request,
         "portal/received.html",
-        {"claim": claim, "status": status, "final": final, "event": claim.event},
+        {"claim": claim, "status": status, "final": final, "form": claim.form},
     )
 
 

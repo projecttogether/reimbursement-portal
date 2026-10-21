@@ -20,19 +20,6 @@ from portal.services.storage import path_for
 pytestmark = pytest.mark.django_db
 
 
-@pytest.fixture
-def delivery(accepted):
-    Job.objects.all().delete()
-    content = b"%PDF-1.4 synthetic provider unit fixture"
-    path = path_for("pdf/test.pdf")
-    path.parent.mkdir(parents=True)
-    path.write_bytes(content)
-    accepted.state, accepted.pdf_key = Claim.State.READY, "pdf/test.pdf"
-    accepted.pdf_hash, accepted.pdf_size = hashlib.sha256(content).hexdigest(), len(content)
-    accepted.save()
-    return Delivery.objects.create(claim=accepted, recipient="finance@example.invalid")
-
-
 def mock_provider(monkeypatch, handler):
     monkeypatch.setattr(
         mailersend,
@@ -363,7 +350,7 @@ def test_participant_sees_one_status_vocabulary(
 ):
     client = prepared["client"]
     response = client.post(
-        "/forms/test/submit/", data=json.dumps(prepared["data"]), content_type="application/json"
+        "/f/test/submit/", data=json.dumps(prepared["data"]), content_type="application/json"
     )
     claim = Claim.objects.get()
     Claim.objects.filter(pk=claim.pk).update(state=claim_state)

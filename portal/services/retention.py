@@ -57,17 +57,23 @@ def purge_claim(claim_id):
         claim.expenses.all().delete()
         for field in [
             "full_name",
-            "postal_address",
             "email",
+            "street",
+            "postal_code",
+            "city",
+            "country",
+            "account_holder",
             "iban",
+            "bic",
             "purpose",
-            "trip_location",
+            "purpose_details",
+            "trip_destination",
             "pdf_key",
             "pdf_hash",
             "error_code",
         ]:
             setattr(claim, field, "")
-        claim.snapshot, claim.totals = {}, {}
+        claim.snapshot, claim.total = {}, None
         claim.trip_start = claim.trip_end = None
         claim.pdf_size = claim.pdf_page_count = 0
         claim.state, claim.purged_at = Claim.State.PURGED, timezone.now()
@@ -75,8 +81,32 @@ def purge_claim(claim_id):
         Draft.objects.filter(claim=claim).update(session_hash="", token_hash="", payload_hash="")
 
 
+def remove_pdf(claim_id):
+    """Delete a delivered claim's PDF and local email copies; the content stays."""
+    with transaction.atomic():
+        # The row lock keeps operator retries out until the PDF is gone.
+        claim = Claim.objects.select_for_update().get(pk=claim_id)
+        if not claim.pdf_key or claim.state in {Claim.State.PURGING, Claim.State.PURGED}:
+            return
+        if queue.claim_has_active_job(claim):
+            raise ClaimBusy
+        remove_keys(claim.pdf_key)
+        delivery = getattr(claim, "delivery", None)
+        if delivery:
+            for attempt in delivery.attempts.all():
+                remove_keys(outbox_key(attempt.id))
+        claim.pdf_key, claim.pdf_removed_at = "", timezone.now()
+        claim.save(update_fields=["pdf_key", "pdf_removed_at"])
+
+
 def cleanup(*, execute=False):
     now = timezone.now()
+    pdfs = list(
+        Claim.objects.filter(pdf_due__lte=now)
+        .exclude(pdf_key="")
+        .exclude(state__in=[Claim.State.PURGING, Claim.State.PURGED])
+        .values_list("pk", flat=True)
+    )
     due = list(
         Claim.objects.filter(retention_due__lte=now)
         .exclude(state=Claim.State.PURGED)
@@ -98,6 +128,7 @@ def cleanup(*, execute=False):
         .count()
     )
     result = {
+        "pdfs_due": len(pdfs),
         "claims_due": len(due),
         "drafts_due": len(drafts),
         "unresolved_near_expiry": unresolved,
@@ -106,6 +137,12 @@ def cleanup(*, execute=False):
     if not execute:
         return result
     DraftAdmission.objects.filter(window_start__lt=now - timedelta(days=2)).delete()
+    for claim_id in pdfs if settings.CONTENT_PURGE_ENABLED else []:
+        try:
+            remove_pdf(claim_id)
+        except (OSError, ClaimBusy):
+            result["failures"] += 1
+            logger.error("pdf_removal_failed reference=%s", claim_id)
     for claim_id in due:
         if (
             not settings.CONTENT_PURGE_ENABLED

@@ -26,17 +26,21 @@ def session_hash(request, *, create=False):
     return salted_hmac("draft-session", request.session.session_key).hexdigest()
 
 
-def get_or_create_draft(request, event):
+def get_or_create_draft(request, form):
+    """This session's editable draft of the form; a submitted draft starts a new one."""
     binding = session_hash(request)
-    current = request.session.get(f"draft:{event.slug}", {})
+    current = request.session.get(f"draft:{form.slug}", {})
     draft = (
-        Draft.objects.filter(pk=current.get("id"), event=event, session_hash=binding).first()
+        Draft.objects.filter(pk=current.get("id"), form=form, session_hash=binding).first()
         if current.get("id")
         else None
     )
-    if draft and draft.claim_id:
-        return draft, current["token"]
-    if draft and draft.expires_at > timezone.now() and draft.config_version == event.config_version:
+    if (
+        draft
+        and not draft.claim_id
+        and draft.expires_at > timezone.now()
+        and draft.config_version == form.config_version
+    ):
         return draft, current["token"]
     if (
         Draft.objects.filter(claim__isnull=True, expires_at__gt=timezone.now()).count()
@@ -62,20 +66,20 @@ def get_or_create_draft(request, event):
     binding = session_hash(request, create=True)
     token = secrets.token_urlsafe(32)
     draft = Draft.objects.create(
-        event=event,
+        form=form,
         session_hash=binding,
         token_hash=digest(token),
-        config_version=event.config_version,
+        config_version=form.config_version,
     )
-    request.session[f"draft:{event.slug}"] = {"id": str(draft.id), "token": token}
+    request.session[f"draft:{form.slug}"] = {"id": str(draft.id), "token": token}
     return draft, token
 
 
-def authorize_draft(request, draft_id, token, event_slug, *, lock=False):
+def authorize_draft(request, draft_id, token, form_slug, *, lock=False):
     try:
         draft_id = uuid.UUID(str(draft_id))
         query = Draft.objects.select_for_update() if lock else Draft.objects
-        draft = query.get(pk=draft_id, event__slug=event_slug, session_hash=session_hash(request))
+        draft = query.get(pk=draft_id, form__slug=form_slug, session_hash=session_hash(request))
     except (Draft.DoesNotExist, ValueError, TypeError) as exc:
         raise IntakeError("Das Formular wurde nicht gefunden.", status=404) from exc
     if not isinstance(token, str) or not constant_time_compare(draft.token_hash, digest(token)):
@@ -87,13 +91,13 @@ def authorize_draft(request, draft_id, token, event_slug, *, lock=False):
     return draft
 
 
-def ensure_accepting(draft, event, form_version):
-    """The draft can still change: not submitted, event open, same configuration revision."""
+def ensure_accepting(draft, form, form_version):
+    """The draft can still change: not submitted, form open, same configuration revision."""
     if draft.claim_id:
         raise IntakeError("Dieses Formular wurde bereits eingereicht.", status=409)
-    if not event.is_open():
+    if not form.is_open():
         raise IntakeError("Dieses Formular ist für neue Anträge geschlossen.", status=409)
-    if form_version != draft.config_version or event.config_version != draft.config_version:
+    if form_version != draft.config_version or form.config_version != draft.config_version:
         raise IntakeError(
             "Das Formular wurde aktualisiert. Bitte lade es neu und prüfe die Angaben erneut.",
             status=409,

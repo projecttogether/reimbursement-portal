@@ -29,7 +29,7 @@ if (!fixtures)
   let mode = "ready",
     polls = 0,
     uploads = 0;
-  await page.route("**/forms/demo/uploads/**", async (route) => {
+  await page.route("**/f/demo/uploads/**", async (route) => {
     if (route.request().method() === "POST") {
       uploads++;
       const id = randomUUID();
@@ -40,8 +40,8 @@ if (!fixtures)
           name: "synthetic.png",
           size: 100,
           state: "pending",
-          status_url: `/forms/demo/uploads/${id}/status/`,
-          delete_url: `/forms/demo/uploads/${id}/`,
+          status_url: `/f/demo/uploads/${id}/status/`,
+          delete_url: `/f/demo/uploads/${id}/`,
         },
       });
     }
@@ -59,17 +59,20 @@ if (!fixtures)
     });
   });
   async function fill(invalidField) {
-    await page.goto(`${base}/forms/demo/?new=1`);
+    await page.goto(`${base}/f/demo/`);
+    await page.locator("#id_purpose_0").check();
+    await page.locator("#id_is_trip").check();
     const values = {
       full_name: "Synthetic Reviewer",
-      postal_address: "Teststrasse 1\n12345 Berlin",
+      street: "Teststrasse 1",
+      postal_code: "12345",
+      city: "Berlin",
       email: "review@example.invalid",
       iban:
         invalidField === "iban"
           ? "DE89370400440532013001"
           : "DE89370400440532013000",
-      purpose: "Synthetic review",
-      trip_location: "Berlin",
+      trip_destination: "Berlin",
       trip_start: "2026-10-20",
       trip_end: invalidField === "trip_end" ? "2026-10-19" : "2026-10-21",
     };
@@ -130,7 +133,7 @@ if (!fixtures)
     mode = "transient";
     polls = 0;
     uploads = 0;
-    await page.goto(`${base}/forms/demo/?new=1`);
+    await page.goto(`${base}/f/demo/`);
     await page
       .locator(".receipt-input")
       .setInputFiles(path.join(fixtures, "train.png"));
@@ -156,7 +159,7 @@ if (!fixtures)
     await page.waitForFunction(() =>
       document
         .getElementById("processing-status")
-        .textContent.includes("zugestellt"),
+        .textContent.includes("wurde an Finance übermittelt"),
     );
     assert.equal(receiptPolls, 2);
     assert.deepEqual(errors, []);

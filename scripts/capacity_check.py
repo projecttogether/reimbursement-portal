@@ -15,6 +15,8 @@ import httpx
 from PIL import Image, ImageDraw
 
 BASE = "http://web:8000"
+# The first purpose option of the demo form (portal/management/commands/seed_demo.py).
+DEMO_PURPOSE = "Teilnahme an der Werkstatt zur Förderung des bürgerschaftlichen Engagements"
 CONTEXT = ssl.create_default_context()
 
 
@@ -35,7 +37,7 @@ RECEIPT, SIGNATURE = image(), image(True)
 def participant(index):
     started = time.monotonic()
     with httpx.Client(base_url=BASE, verify=CONTEXT, timeout=30, trust_env=False) as client:
-        response = client.get("/forms/demo/?new=1")
+        response = client.get("/f/demo/")
         response.raise_for_status()
         config = json.loads(
             re.search(
@@ -51,7 +53,6 @@ def participant(index):
                 "purpose": "Capacity check",
                 "receipt_reference": str(position + 1),
                 "amount": "12,50",
-                "currency": "EUR",
             }
             upload = client.post(
                 config["upload_url"],
@@ -102,11 +103,16 @@ def participant(index):
                 "declaration": True,
                 "privacy_acknowledged": True,
                 "full_name": "Synthetic Participant",
-                "postal_address": "Teststrasse 1\n12345 Berlin",
+                "street": "Teststrasse 1",
+                "postal_code": "12345",
+                "city": "Berlin",
+                "country": "DE",
+                "account_holder": "Synthetic Participant",
                 "email": "capacity@example.invalid",
                 "iban": "DE89370400440532013000",
-                "purpose": "Synthetic capacity test",
-                "trip_location": "Berlin",
+                "purpose": DEMO_PURPOSE,
+                "is_trip": True,
+                "trip_destination": "Berlin",
                 "trip_start": "2026-10-20",
                 "trip_end": "2026-10-21",
                 "expenses": rows,

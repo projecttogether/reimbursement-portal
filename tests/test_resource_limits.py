@@ -38,7 +38,7 @@ pytestmark = pytest.mark.django_db
 
 def upload_file(prepared, *, kind="receipt", content=None, name="receipt.png"):
     return prepared["client"].post(
-        "/forms/test/uploads/",
+        "/f/test/uploads/",
         {
             "draft_id": str(prepared["draft"].pk),
             "token": prepared["data"]["token"],
@@ -78,7 +78,7 @@ def test_network_upload_budget_survives_new_cookies_and_rolls_over(prepared, set
     settings.MAX_UPLOADS_PER_NETWORK = 1
     assert upload_file(prepared).status_code == 202
     other = Client()
-    assert other.get("/forms/test/").status_code == 200
+    assert other.get("/f/test/").status_code == 200
     binding = other.session["draft:test"]
     other_prepared = {
         **prepared,
@@ -234,13 +234,13 @@ def test_validation_reservation_survives_until_metadata_publication(prepared, mo
 
 
 @pytest.mark.django_db(transaction=True)
-def test_competing_drafts_cannot_reserve_the_same_last_space(event, settings, fake_disk):
+def test_competing_drafts_cannot_reserve_the_same_last_space(form, settings, fake_disk):
     if connection.vendor != "postgresql":
         pytest.skip("Concurrent row locking requires PostgreSQL")
     CapacityLock.objects.get_or_create(pk=1)
     clients = [Client(), Client()]
     for client in clients:
-        assert client.get("/forms/test/").status_code == 200
+        assert client.get("/f/test/").status_code == 200
     content = image_bytes()
     free = (
         settings.UPLOAD_TEMP_HEADROOM_BYTES + settings.MAX_NORMALIZED_FILE_BYTES + len(content) * 2
@@ -252,7 +252,7 @@ def test_competing_drafts_cannot_reserve_the_same_last_space(event, settings, fa
         try:
             binding = client.session["draft:test"]
             return client.post(
-                "/forms/test/uploads/",
+                "/f/test/uploads/",
                 {
                     "draft_id": binding["id"],
                     "token": binding["token"],

@@ -255,7 +255,7 @@ def build_pdf(manifest_path, output):
         writer.add_metadata(
             {
                 "/Title": f"Erstattung {manifest['reference']}",
-                "/Producer": "PT Reimbursement Portal",
+                "/Producer": "ProjectTogether Erstattungsportal",
             }
         )
         # Keep each page's content stream independent. Deduplicating streams before

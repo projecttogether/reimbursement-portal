@@ -1,11 +1,17 @@
 import getpass
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
-from portal.job_kinds import RENDER
-from portal.models import Claim, Operation
-from portal.services import delivery, queue
+from portal.services import operations
+
+MESSAGES = {
+    "active_job": "This claim already has an active job.",
+    "duplicate_risk": (
+        "Check provider activity first. Use --acknowledge-duplicate-risk for an intentional resend."
+    ),
+    "not_retryable": "This claim cannot be retried in its current state.",
+    "pdf_removed": "The PDF of this claim was already deleted.",
+}
 
 
 class Command(BaseCommand):
@@ -17,23 +23,14 @@ class Command(BaseCommand):
         parser.add_argument("--actor", default=getpass.getuser())
         parser.add_argument("--acknowledge-duplicate-risk", action="store_true")
 
-    @transaction.atomic
     def handle(self, *args, **options):
-        claim = Claim.objects.select_for_update().get(pk=options["reference"])
-        if queue.claim_has_active_job(claim):
-            raise CommandError("This claim already has an active job.")
-        if claim.state == Claim.State.READY:
-            try:
-                delivery.retry(
-                    claim, acknowledge_duplicate_risk=options["acknowledge_duplicate_risk"]
-                )
-            except delivery.DuplicateRisk as exc:
-                raise CommandError(
-                    "Check provider activity first. Use --acknowledge-duplicate-risk for an intentional resend."
-                ) from exc
-        elif not RENDER.requeue(claim):
-            raise CommandError("This claim cannot be retried in its current state.")
-        Operation.objects.create(
-            claim=claim, action="retry", actor=options["actor"], reason=options["reason"]
-        )
+        try:
+            claim = operations.retry(
+                options["reference"],
+                actor=options["actor"],
+                reason=options["reason"],
+                acknowledge_duplicate_risk=options["acknowledge_duplicate_risk"],
+            )
+        except operations.ActionRefused as exc:
+            raise CommandError(MESSAGES.get(exc.code, str(exc))) from exc
         self.stdout.write(f"Queued retry for {claim.reference}.")

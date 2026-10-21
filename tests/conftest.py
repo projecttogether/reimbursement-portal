@@ -8,7 +8,17 @@ import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from PIL import Image, ImageDraw
 
-from portal.models import Claim, Draft, Event, Upload
+from portal.models import (
+    Claim,
+    Delivery,
+    Draft,
+    Form,
+    FormTemplate,
+    Job,
+    PrivacyNotice,
+    TemplateField,
+    Upload,
+)
 from portal.services.storage import path_for
 
 
@@ -53,16 +63,39 @@ def fake_disk(monkeypatch):
 
 
 @pytest.fixture
-def event(db):
-    return Event.objects.create(
+def template(db):
+    template, _ = FormTemplate.objects.get_or_create(
+        name="Test-Vorlage", defaults={"travel": "optional", "mileage_enabled": True}
+    )
+    TemplateField.objects.get_or_create(
+        template=template, key="kst", defaults={"label": "Kostenstelle (KST)", "position": 0}
+    )
+    TemplateField.objects.get_or_create(
+        template=template,
+        key="ktr",
+        defaults={"label": "Kostenträger (KTR)", "required": False, "position": 1},
+    )
+    return template
+
+
+@pytest.fixture
+def privacy_notice(db):
+    # Transactional tests flush the notice the migrations create.
+    return PrivacyNotice.current() or PrivacyNotice.objects.create(
+        text="Synthetic privacy notice for tests."
+    )
+
+
+@pytest.fixture
+def form(template, privacy_notice):
+    return Form.objects.create(
+        template=template,
         slug="test",
         name="Test Workshop",
-        cost_center="TEST-KST",
-        cost_object="TEST-KTR",
+        field_values={"kst": "TEST-KST", "ktr": "TEST-KTR"},
         recipient="finance@example.invalid",
         support_email="finance@example.invalid",
-        privacy_notice="Synthetic privacy notice for tests.",
-        privacy_version="test-v1",
+        active=True,
     )
 
 
@@ -96,11 +129,11 @@ def camera_jpeg_bytes(*, primary_color="forestgreen"):
 
 
 @pytest.fixture
-def prepared(client, event):
-    response = client.get(f"/forms/{event.slug}/")
+def prepared(client, form):
+    response = client.get(f"/f/{form.slug}/")
     assert response.status_code == 200
     draft = Draft.objects.get()
-    token = client.session[f"draft:{event.slug}"]["token"]
+    token = client.session[f"draft:{form.slug}"]["token"]
     row_id = uuid.uuid4()
     receipt_id, signature_id = uuid.uuid4(), uuid.uuid4()
     for upload_id, kind in [(receipt_id, "receipt"), (signature_id, "signature")]:
@@ -126,13 +159,20 @@ def prepared(client, event):
     data = {
         "draft_id": str(draft.id),
         "token": token,
-        "config_version": event.config_version,
+        "config_version": form.config_version,
         "full_name": "Alex Beispiel",
-        "postal_address": "Teststraße 1\n12345 Berlin\nDeutschland",
         "email": "participant@example.invalid",
+        "street": "Teststraße 1",
+        "postal_code": "12345",
+        "city": "Berlin",
+        "country": "DE",
+        "account_holder": "Alex Beispiel",
         "iban": "DE89 3704 0044 0532 0130 00",
+        "bic": "",
         "purpose": "Teilnahme am synthetischen Workshop",
-        "trip_location": "Berlin",
+        "purpose_details": "",
+        "is_trip": True,
+        "trip_destination": "Berlin",
         "trip_start": "2026-10-20",
         "trip_end": "2026-10-21",
         "declaration": True,
@@ -145,21 +185,34 @@ def prepared(client, event):
                 "purpose": "Workshop-Anreise",
                 "receipt_reference": "TEST-1",
                 "amount": "12,50",
-                "currency": "EUR",
                 "uploads": [str(receipt_id)],
             }
         ],
     }
-    return {"client": client, "event": event, "draft": draft, "data": data}
+    return {"client": client, "form": form, "draft": draft, "data": data}
 
 
 @pytest.fixture
 def accepted(prepared):
     response = prepared["client"].post(
-        "/forms/test/submit/", data=json.dumps(prepared["data"]), content_type="application/json"
+        "/f/test/submit/", data=json.dumps(prepared["data"]), content_type="application/json"
     )
     assert response.status_code == 202, response.content
     return Claim.objects.get()
+
+
+@pytest.fixture
+def delivery(accepted):
+    """An accepted claim with a ready synthetic PDF and no queued jobs."""
+    Job.objects.all().delete()
+    content = b"%PDF-1.4 synthetic provider unit fixture"
+    path = path_for("pdf/test.pdf")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(content)
+    accepted.state, accepted.pdf_key = Claim.State.READY, "pdf/test.pdf"
+    accepted.pdf_hash, accepted.pdf_size = hashlib.sha256(content).hexdigest(), len(content)
+    accepted.save()
+    return Delivery.objects.create(claim=accepted, recipient="finance@example.invalid")
 
 
 @pytest.fixture

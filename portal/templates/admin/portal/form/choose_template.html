@@ -1,0 +1,17 @@
+{% extends "admin/base_site.html" %}
+{% block breadcrumbs %}<div class="breadcrumbs"><a href="{% url 'admin:index' %}">Start</a> › <a href="{% url 'admin:portal_form_changelist' %}">Formulare</a> › Neues Formular</div>{% endblock %}
+{% block content %}
+<div id="content-main">
+<p>Die Vorlage legt fest, welche internen Werte (z. B. KST, KTR) du angibst und welche Angaben Teilnehmende machen. Sie kann später nicht geändert werden.</p>
+{% if templates %}
+<table>
+<thead><tr><th>Vorlage</th><th>Beschreibung</th></tr></thead>
+<tbody>
+{% for template in templates %}<tr><td><a href="?template={{ template.pk }}">{{ template.name }}</a></td><td>{{ template.description|linebreaksbr }}</td></tr>{% endfor %}
+</tbody>
+</table>
+{% else %}
+<p>Es gibt noch keine Vorlage. Vorlagen legen Vorlagen-Admins an.</p>
+{% endif %}
+</div>
+{% endblock %}
