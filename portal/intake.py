@@ -22,6 +22,8 @@ EXPENSE_FIELD_LENGTHS = {
 }
 # Kilometres of one mileage row, one way.
 MAX_DISTANCE_KM = 5000
+# The largest claim total the database stores (Claim.total, 12 digits).
+MAX_CLAIM_TOTAL = Decimal("9999999999.99")
 # Signature attempts kept per draft, independent of the expense rows.
 MAX_SIGNATURE_FILES = 3
 RECEIPT_EXTENSIONS = frozenset({".pdf", ".png", ".jpg", ".jpeg"})

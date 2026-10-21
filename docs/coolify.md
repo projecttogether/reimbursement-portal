@@ -113,6 +113,12 @@ Form, template and privacy notice changes take effect immediately. Open drafts o
 affected forms must reload and be reviewed again; accepted claims keep their
 snapshot. Keep a form's slug stable once its link has been sent.
 
+Moving from the earlier event-based release (one web resource per cost center)
+requires a fresh start: its migration history was replaced. Remove the old backend
+and web resources, drop and recreate the database, and start with empty private
+storage. Against an old database the migration job stops with an explicit error
+and changes nothing.
+
 For schema/code upgrades, Coolify redeploys the whole resource: the migration job
 runs before web and worker start. Keep all volumes. Coordinate rollbacks with
 database compatibility and never run an old worker against a newer schema.

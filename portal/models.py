@@ -233,7 +233,22 @@ class Form(models.Model):
             self.active
             and (not self.opens_at or now >= self.opens_at)
             and (not self.closes_at or now <= self.closes_at)
+            and not self.internal_value_errors()
         )
+
+    def internal_value_errors(self):
+        """Labels of internal values that no longer satisfy the current template.
+
+        A template change can add a required field or tighten a pattern; the form then
+        stays closed until its owners update the values.
+        """
+        errors = []
+        for field in self.template.fields.all():
+            try:
+                field.validate(self.field_values.get(field.key, ""))
+            except ValidationError:
+                errors.append(field.label)
+        return errors
 
     def save(self, *args, **kwargs):
         # Every saved change makes open drafts reload, so nobody submits against old values.

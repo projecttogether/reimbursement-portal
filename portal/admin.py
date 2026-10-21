@@ -211,7 +211,15 @@ def value_field(field):
 
 @admin.register(Form, site=site)
 class FormAdmin(admin.ModelAdmin):
-    list_display = ["name", "template", "active", "open_now", "closes_at", "link"]
+    list_display = [
+        "name",
+        "template",
+        "active",
+        "values_complete",
+        "open_now",
+        "closes_at",
+        "link",
+    ]
     list_filter = ["active", "template"]
     search_fields = ["name", "slug"]
     prepopulated_fields = {"slug": ["name"]}
@@ -329,12 +337,23 @@ class FormAdmin(admin.ModelAdmin):
     def open_now(self, obj):
         return obj.is_open()
 
+    @admin.display(description="Interne Werte vollständig", boolean=True)
+    def values_complete(self, obj):
+        return not obj.internal_value_errors()
+
     def changelist_view(self, request, extra_context=None):
         self._request = request
         return super().changelist_view(request, extra_context)
 
     def changeform_view(self, request, object_id=None, form_url="", extra_context=None):
         self._request = request
+        form = self.get_object(request, object_id) if object_id else None
+        if request.method == "GET" and form and form.internal_value_errors():
+            messages.warning(
+                request,
+                "Die Vorlage wurde geändert. Das Formular bleibt geschlossen, bis diese "
+                f"internen Werte passen: {', '.join(form.internal_value_errors())}.",
+            )
         return super().changeform_view(request, object_id, form_url, extra_context)
 
     def save_related(self, request, form, formsets, change):

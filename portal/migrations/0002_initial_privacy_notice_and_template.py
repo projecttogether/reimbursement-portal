@@ -7,6 +7,12 @@ from portal.privacy_notice import DEFAULT_PRIVACY_NOTICE
 
 
 def seed(apps, schema_editor):
+    if "portal_formtemplate" not in schema_editor.connection.introspection.table_names():
+        # Django skips the rewritten 0001 on databases from the event-based release.
+        raise RuntimeError(
+            "This database was created by the event-based release. Reset the database "
+            "and private storage before deploying templates and forms (docs/coolify.md)."
+        )
     PrivacyNotice = apps.get_model("portal", "PrivacyNotice")
     FormTemplate = apps.get_model("portal", "FormTemplate")
     TemplateField = apps.get_model("portal", "TemplateField")

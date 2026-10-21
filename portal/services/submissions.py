@@ -12,6 +12,7 @@ from django.utils.dateparse import parse_date
 from portal.forms import ClaimForm
 from portal.intake import (
     EXPENSE_FIELD_LENGTHS,
+    MAX_CLAIM_TOTAL,
     IntakeError,
     message,
     mileage_amount,
@@ -116,6 +117,8 @@ def normalized_payload(data, form):
             cleaned.append(item)
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise IntakeError(f"Position {position + 1}: {exc}") from exc
+    if total > MAX_CLAIM_TOTAL:
+        raise IntakeError("Die Summe aller Positionen ist zu hoch. Bitte prüfe die Beträge.")
     payload = dict(claim_form.cleaned_data)
     try:
         payload["signature"] = str(uuid.UUID(data["signature"]))

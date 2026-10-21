@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 
 from portal import roles
+from portal.intake import MAX_CLAIM_TOTAL
 from portal.models import Claim, Draft, FormTemplate, PrivacyNotice, TemplateField
 
 pytestmark = pytest.mark.django_db
@@ -239,3 +240,26 @@ def test_template_fields_validate_internal_values(template):
         choice.validate("C")
     with pytest.raises(ValidationError):
         TemplateField(template=template, key="bad", label="Bad", pattern="(").full_clean()
+
+
+def test_form_closes_when_its_template_gains_a_required_value(prepared):
+    form = prepared["form"]
+    TemplateField.objects.create(template=form.template, key="id", label="ID")
+    form.refresh_from_db()
+    assert form.internal_value_errors() == ["ID"] and not form.is_open()
+    prepared["data"]["config_version"] = form.config_version
+    assert post(prepared).status_code == 409
+    assert prepared["client"].get("/f/test/").status_code == 403
+    form.field_values["id"] = "WS-1"
+    form.save()
+    assert form.is_open()
+    assert ("ID", "WS-1") in form.internal_values()
+
+
+def test_claim_total_cannot_exceed_the_stored_precision(prepared, monkeypatch):
+    assert MAX_CLAIM_TOTAL == Decimal("9999999999.99")
+    monkeypatch.setattr("portal.services.submissions.MAX_CLAIM_TOTAL", Decimal("10"))
+    response = post(prepared)
+    assert response.status_code == 400
+    assert "Summe" in response.json()["error"]
+    assert not Claim.objects.exists()
