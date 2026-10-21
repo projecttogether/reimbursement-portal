@@ -15,11 +15,15 @@ from portal.models import (
     Upload,
     WorkspaceReservation,
 )
+from portal.services import uploads
 from portal.services.capacity import recover_abandoned_workspaces
-from portal.services.documents import ProcessingError
 from portal.services.storage import outbox_key, remove_keys, sweep_orphans
 
 logger = logging.getLogger(__name__)
+
+
+class ClaimBusy(Exception):
+    """A job or execution workspace still uses the claim; purge later."""
 
 
 def purge_claim(claim_id):
@@ -32,14 +36,14 @@ def purge_claim(claim_id):
             or Job.objects.filter(state="running", delivery__claim=claim).exists()
             or WorkspaceReservation.objects.filter(Q(claim=claim) | Q(upload__claim=claim)).exists()
         ):
-            raise ProcessingError("claim_busy")
+            raise ClaimBusy
         claim.state = Claim.State.PURGING
         claim.save(update_fields=["state"])
         Job.objects.filter(claim=claim).update(state="cancelled")
         Job.objects.filter(delivery__claim=claim).update(state="cancelled")
     # Leave the manifest intact until every deletion succeeds, so a crash resumes safely.
     for upload in claim.uploads.all():
-        remove_keys(upload.source_key, upload.normalized_key)
+        uploads.remove_files(upload)
     remove_keys(claim.pdf_key)
     delivery = getattr(claim, "delivery", None)
     if delivery:
@@ -113,42 +117,16 @@ def cleanup(*, execute=False):
             continue
         try:
             purge_claim(claim_id)
-        except (OSError, ProcessingError):
+        except (OSError, ClaimBusy):
             result["failures"] += 1
             logger.error("purge_failed reference=%s", claim_id)
     for draft_id in drafts:
-        with transaction.atomic():
-            draft = (
-                Draft.objects.select_for_update().filter(pk=draft_id, claim__isnull=True).first()
-            )
-            if (
-                not draft
-                or Job.objects.filter(upload__draft=draft, state="running").exists()
-                or WorkspaceReservation.objects.filter(upload__draft=draft).exists()
-            ):
-                continue
-            try:
-                for upload in draft.uploads.all():
-                    remove_keys(upload.source_key, upload.normalized_key)
-                draft.delete()
-            except OSError:
-                result["failures"] += 1
+        try:
+            uploads.expire_draft(draft_id)
+        except OSError:
+            result["failures"] += 1
     Draft.objects.filter(claim__state=Claim.State.PURGED, expires_at__lt=now).delete()
-    # Accepted drafts can contain uploads removed from the final manifest. Those
-    # files retain the draft lifetime rather than the claim's longer retention.
-    unused = Upload.objects.filter(
-        claim__isnull=True, draft__claim__isnull=False, created_at__lt=now - timedelta(hours=24)
-    )
-    for upload in unused:
-        if (
-            not Job.objects.filter(upload=upload, state="running").exists()
-            and not WorkspaceReservation.objects.filter(upload=upload).exists()
-        ):
-            try:
-                remove_keys(upload.source_key, upload.normalized_key)
-                upload.delete()
-            except OSError:
-                result["failures"] += 1
+    result["failures"] += uploads.expire_unattached(now)
     DeliveryEvent.objects.filter(
         attempt__isnull=True, received_at__lt=now - timedelta(days=30)
     ).delete()

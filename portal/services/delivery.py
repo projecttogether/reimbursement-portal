@@ -8,7 +8,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from portal.models import Claim, Delivery, DeliveryAttempt, DeliveryEvent
-from portal.services.submissions import digest
+from portal.services.drafts import digest
 
 EVENT_STATES = {
     "activity.sent": "provider_accepted",

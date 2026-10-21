@@ -1,11 +1,9 @@
 import json
 import secrets
-import uuid
 from functools import wraps
-from pathlib import Path
 
 from django.conf import settings
-from django.db import connection, transaction
+from django.db import connection
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -16,24 +14,15 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 from portal import intake
 from portal.forms import ClaimForm
 from portal.intake import IntakeError
-from portal.models import Claim, Draft, Event, Job, Upload, WorkspaceReservation
-from portal.services.capacity import CapacityError, admit_upload, storage_available
+from portal.models import Claim, Event
+from portal.services import uploads
+from portal.services.capacity import storage_available
 from portal.services.delivery import ingest_event
+from portal.services.drafts import get_or_create_draft, session_hash
 from portal.services.mailersend import verify_webhook
 from portal.services.readiness import dependencies
-from portal.services.storage import (
-    check_writable,
-    remove_keys,
-    save_upload,
-    upload_source_key,
-)
-from portal.services.submissions import (
-    authorize_draft,
-    draft_receipt_bytes,
-    get_or_create_draft,
-    session_hash,
-    submit_claim,
-)
+from portal.services.storage import check_writable
+from portal.services.submissions import submit_claim
 
 
 def api_errors(view):
@@ -108,98 +97,19 @@ def event_form(request, event_slug):
 def upload(request, event_slug):
     if not storage_available():
         raise IntakeError("Der Upload ist vorübergehend nicht verfügbar.", status=503)
-    files = request.FILES
+    # Parsing the body sets the flag when the bounded upload handler stopped it.
+    file = request.FILES.get("file")
     if getattr(request, "upload_limit_exceeded", False):
         raise IntakeError(intake.message("receipt_too_large"), status=413)
-    file = files.get("file")
-    kind = request.POST.get("kind", "receipt")
-    if not file or kind not in {"receipt", "signature"}:
-        raise IntakeError("Bitte wähle eine Belegdatei oder Unterschrift aus.")
-    extension = Path(file.name).suffix.lower()
-    if extension not in (
-        intake.SIGNATURE_EXTENSIONS if kind == "signature" else intake.RECEIPT_EXTENSIONS
-    ):
-        raise IntakeError(intake.message("unsupported_type"))
-    try:
-        expense_id = uuid.UUID(request.POST["expense_id"]) if kind == "receipt" else None
-    except (KeyError, ValueError, TypeError) as exc:
-        raise IntakeError("Die Auslagenposition fehlt.") from exc
-    key = ""
-    try:
-        with transaction.atomic():
-            draft = authorize_draft(
-                request,
-                request.POST.get("draft_id"),
-                request.POST.get("token"),
-                event_slug,
-                lock=True,
-            )
-            event = Event.objects.get(pk=draft.event_id)
-            if (
-                draft.claim_id
-                or not event.is_open()
-                or event.config_version != draft.config_version
-            ):
-                raise IntakeError(
-                    "Dieses Formular wurde bereits eingereicht, geschlossen oder aktualisiert.",
-                    status=409,
-                )
-            limits = intake.limits()
-            count = draft.uploads.filter(kind=kind, expense_id=expense_id).count()
-            if (
-                count
-                >= (limits.files_per_expense if kind == "receipt" else intake.MAX_SIGNATURE_FILES)
-                or draft.uploads.count() >= limits.draft_files
-            ):
-                raise IntakeError("Bitte entferne zuerst eine vorhandene Datei.")
-            if (
-                kind == "receipt"
-                and draft_receipt_bytes(draft) + file.size > limits.submission_bytes
-            ):
-                raise IntakeError(intake.message("submission_too_large"), status=413)
-            upload_id = uuid.uuid4()
-            try:
-                reservation = admit_upload(request, draft, file.size)
-            except CapacityError as exc:
-                messages = {
-                    "draft_work_limit": "Für dieses Formular wurden zu viele Dateien hochgeladen. Bitte kontaktiere uns.",
-                    "network_work_limit": "Zu viele Uploads aus diesem Netzwerk. Bitte versuche es später erneut.",
-                    "draft_storage_limit": "Die Dateien benötigen zu viel Speicher. Bitte entferne nicht benötigte Dateien.",
-                }
-                raise IntakeError(
-                    messages.get(
-                        str(exc),
-                        "Die Upload-Kapazität ist gerade begrenzt. Bitte warte kurz und versuche es erneut.",
-                    ),
-                    status=429 if str(exc) in {"draft_work_limit", "network_work_limit"} else 503,
-                ) from exc
-            key = upload_source_key(upload_id, extension)
-            try:
-                size, checksum = save_upload(
-                    file,
-                    key,
-                    limits.signature_bytes if kind == "signature" else limits.receipt_bytes,
-                )
-            except ValueError as exc:
-                raise IntakeError(intake.message("file_too_large"), status=413) from exc
-            if not size:
-                raise IntakeError("Die Datei ist leer.")
-            item = Upload.objects.create(
-                id=upload_id,
-                draft=draft,
-                expense_id=expense_id,
-                kind=kind,
-                original_name=Path(file.name).name[:200],
-                source_key=key,
-                size=size,
-                checksum=checksum,
-                reserved_bytes=reservation,
-            )
-            Job.objects.create(key=f"validate:{item.id}", kind="validate", upload=item)
-    except Exception:
-        if key:
-            remove_keys(key)
-        raise
+    item = uploads.accept(
+        request,
+        event_slug,
+        file=file,
+        kind=request.POST.get("kind", "receipt"),
+        expense_id=request.POST.get("expense_id"),
+        draft_id=request.POST.get("draft_id"),
+        token=request.POST.get("token"),
+    )
     return JsonResponse(
         {
             "id": str(item.id),
@@ -217,49 +127,15 @@ def upload(request, event_slug):
     )
 
 
-def owned_upload(request, event_slug, upload_id):
-    return get_object_or_404(
-        Upload,
-        pk=upload_id,
-        draft__event__slug=event_slug,
-        draft__session_hash=session_hash(request),
-        draft__expires_at__gt=timezone.now(),
-    )
-
-
 @require_GET
 def upload_status(request, event_slug, upload_id):
-    item = owned_upload(request, event_slug, upload_id)
-    return JsonResponse(
-        {
-            "id": str(item.id),
-            "state": item.state,
-            "pages": item.pages,
-            "message": intake.message(item.error_code, intake.message("upload_unchecked"))
-            if item.error_code
-            else "",
-        }
-    )
+    return JsonResponse(uploads.status(uploads.owned(request, event_slug, upload_id)))
 
 
 @require_http_methods(["DELETE"])
 @api_errors
-@transaction.atomic
 def upload_remove(request, event_slug, upload_id):
-    item = owned_upload(request, event_slug, upload_id)
-    draft = Draft.objects.select_for_update().get(pk=item.draft_id)
-    if draft.claim_id or item.claim_id:
-        raise IntakeError("Eingereichte Belege können nicht geändert werden.", status=409)
-    jobs = list(item.job_set.select_for_update())
-    if (
-        any(job.state == "running" for job in jobs)
-        or WorkspaceReservation.objects.filter(upload=item).exists()
-    ):
-        raise IntakeError(
-            "Die Datei wird gerade geprüft. Bitte versuche es kurz danach erneut.", status=409
-        )
-    remove_keys(item.source_key, item.normalized_key)
-    item.delete()
+    uploads.discard(request, event_slug, upload_id)
     return JsonResponse({"removed": True})
 
 

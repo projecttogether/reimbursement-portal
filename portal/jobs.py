@@ -8,7 +8,8 @@ from django.db import connection, transaction
 from django.utils import timezone
 
 from portal.models import Claim, Delivery, DeliveryAttempt, Job, Upload
-from portal.services.capacity import CapacityError, release_upload, temporary_workspace
+from portal.services import uploads
+from portal.services.capacity import CapacityError, temporary_workspace
 from portal.services.delivery import reconcile_unmatched, update_delivery
 from portal.services.documents import ProcessingError, build_claim_pdf, validate_upload
 from portal.services.mailersend import send_pdf
@@ -61,10 +62,7 @@ def reclaim_stale_jobs():
                         state=Claim.State.FAILED, error_code="worker_interrupted"
                     )
                 if job.upload_id:
-                    release_upload(job.upload_id)
-                    Upload.objects.filter(pk=job.upload_id).update(
-                        state=Upload.State.FAILED, error_code="worker_interrupted"
-                    )
+                    uploads.mark_failed(job.upload_id, "worker_interrupted")
         job.lease_token, job.lease_until = None, None
         job.save()
 
@@ -97,25 +95,9 @@ def process_validation(job):
     scan_file(path_for(upload.source_key))
     with validate_upload(upload) as result:
         with transaction.atomic():
-            if not live_job(job):
-                if result["normalized_key"] != upload.source_key:
-                    remove_keys(result["normalized_key"])
+            if not live_job(job) or not uploads.mark_ready(upload.pk, result):
+                uploads.discard_output(upload, result)
                 return
-            current = Upload.objects.select_for_update().filter(pk=upload.pk).first()
-            if not current:
-                if result["normalized_key"] != upload.source_key:
-                    remove_keys(result["normalized_key"])
-                return
-            current.normalized_key = result["normalized_key"]
-            current.media_type, current.pages, current.state = (
-                result["media_type"],
-                result["pages"],
-                Upload.State.READY,
-            )
-            current.error_code = ""
-            current.normalized_size = result["normalized_size"]
-            current.save()
-            release_upload(current.pk)
             finish_job(job)
 
 
@@ -229,13 +211,10 @@ def run_one():
                     BACKOFF[min(job.attempts - 1, len(BACKOFF) - 1)],
                 )
                 if job.upload_id:
-                    Upload.objects.filter(pk=job.upload_id).update(
-                        state=Upload.State.PENDING if retry else Upload.State.FAILED,
-                        error_code=code,
-                    )
-                    # Scanner retries happen before workspace transfer and keep it.
-                    if not retry:
-                        release_upload(job.upload_id)
+                    if retry:
+                        uploads.mark_retrying(job.upload_id, code)
+                    else:
+                        uploads.mark_failed(job.upload_id, code)
                 if job.claim_id:
                     Claim.objects.filter(pk=job.claim_id).update(
                         state=Claim.State.FAILED, error_code=code
@@ -256,10 +235,7 @@ def run_one():
                         state=Claim.State.FAILED, error_code="processing_error"
                     )
                 if job.upload_id:
-                    release_upload(job.upload_id)
-                    Upload.objects.filter(pk=job.upload_id).update(
-                        state=Upload.State.FAILED, error_code="processing_error"
-                    )
+                    uploads.mark_failed(job.upload_id, "processing_error")
                 finish_job(job, "failed", "processing_error")
         logger.exception("job_failed job=%s kind=%s", job.pk, job.kind)
     return True

@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from portal.models import Claim, Delivery, DeliveryAttempt, DeliveryEvent, Job
 from portal.services.delivery import reconcile_unmatched
-from portal.services.submissions import digest
+from portal.services.drafts import digest
 
 pytestmark = pytest.mark.django_db
 

@@ -1,94 +1,18 @@
-import hashlib
 import json
-import secrets
 import uuid
 from datetime import timedelta
 from decimal import Decimal
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Sum
 from django.utils import timezone
-from django.utils.crypto import constant_time_compare, salted_hmac
+from django.utils.crypto import constant_time_compare
 
 from portal.forms import ClaimForm
 from portal.intake import EXPENSE_FIELD_LENGTHS, IntakeError, message, parse_amount
-from portal.models import Claim, Draft, Event, Expense, Job, Upload
-from portal.services.draft_limits import reserve_draft
-from portal.services.storage import path_for
-
-
-def digest(value):
-    return hashlib.sha256(value.encode()).hexdigest()
-
-
-def session_hash(request, *, create=False):
-    if not request.session.session_key:
-        if not create:
-            return None
-        request.session.create()
-    return salted_hmac("draft-session", request.session.session_key).hexdigest()
-
-
-def get_or_create_draft(request, event):
-    binding = session_hash(request)
-    current = request.session.get(f"draft:{event.slug}", {})
-    draft = (
-        Draft.objects.filter(pk=current.get("id"), event=event, session_hash=binding).first()
-        if current.get("id")
-        else None
-    )
-    if draft and draft.claim_id:
-        return draft, current["token"]
-    if draft and draft.expires_at > timezone.now() and draft.config_version == event.config_version:
-        return draft, current["token"]
-    if (
-        Draft.objects.filter(claim__isnull=True, expires_at__gt=timezone.now()).count()
-        >= settings.MAX_ACTIVE_DRAFTS
-    ):
-        raise IntakeError(
-            "Das Formular ist gerade ausgelastet. Bitte versuche es später erneut.", status=503
-        )
-    if (
-        Draft.objects.filter(
-            session_hash=binding, created_at__gt=timezone.now() - timedelta(days=1)
-        ).count()
-        >= 10
-    ):
-        raise IntakeError("Zu viele neue Formulare. Bitte versuche es später erneut.", status=429)
-    if not reserve_draft(request):
-        raise IntakeError(
-            "Zu viele neue Formulare aus diesem Netzwerk. Bitte versuche es später erneut.",
-            status=429,
-        )
-    # Reject before creating a session. Session creation must also commit outside
-    # a transaction that can roll back after a normal admission rejection.
-    binding = session_hash(request, create=True)
-    token = secrets.token_urlsafe(32)
-    draft = Draft.objects.create(
-        event=event,
-        session_hash=binding,
-        token_hash=digest(token),
-        config_version=event.config_version,
-    )
-    request.session[f"draft:{event.slug}"] = {"id": str(draft.id), "token": token}
-    return draft, token
-
-
-def authorize_draft(request, draft_id, token, event_slug, *, lock=False):
-    try:
-        draft_id = uuid.UUID(str(draft_id))
-        query = Draft.objects.select_for_update() if lock else Draft.objects
-        draft = query.get(pk=draft_id, event__slug=event_slug, session_hash=session_hash(request))
-    except (Draft.DoesNotExist, ValueError, TypeError) as exc:
-        raise IntakeError("Das Formular wurde nicht gefunden.", status=404) from exc
-    if not isinstance(token, str) or not constant_time_compare(draft.token_hash, digest(token)):
-        raise IntakeError("Das Formular wurde nicht gefunden.", status=404)
-    if not draft.claim_id and draft.expires_at <= timezone.now():
-        raise IntakeError(
-            "Das Formular ist abgelaufen. Bitte öffne das Formular erneut.", status=410
-        )
-    return draft
+from portal.models import Claim, Event, Expense, Job
+from portal.services import uploads
+from portal.services.drafts import authorize_draft, digest, ensure_accepting
 
 
 def normalized_payload(data, event):
@@ -163,36 +87,16 @@ def submit_claim(request, event_slug, data):
                 "Dieses Formular wurde bereits mit anderen Angaben eingereicht.", status=409
             )
         return draft.claim
-    if not event.is_open():
-        raise IntakeError("Dieses Formular ist für neue Anträge geschlossen.", status=409)
-    if (
-        data.get("config_version") != draft.config_version
-        or event.config_version != draft.config_version
-    ):
-        raise IntakeError(
-            "Das Formular wurde aktualisiert. Bitte lade es neu und prüfe die Angaben erneut.",
-            status=409,
-        )
+    ensure_accepting(draft, event, form_version=data.get("config_version"))
     if event.recipient.lower() not in settings.APPROVED_DELIVERY_RECIPIENTS:
         raise IntakeError("Das Formular ist derzeit nicht verfügbar.", status=503)
     payload, totals = normalized_payload(data, event)
     all_ids = [file_id for row in payload["expenses"] for file_id in row["uploads"]] + [
         payload["signature"]
     ]
-    files = {
-        str(upload.id): upload
-        for upload in Upload.objects.select_for_update().filter(
-            draft=draft, id__in=all_ids, claim__isnull=True
-        )
-    }
-    if len(files) != len(all_ids) or any(
-        upload.state != Upload.State.READY for upload in files.values()
-    ):
-        raise IntakeError("Bitte warte, bis alle Belege und die Unterschrift geprüft sind.")
+    files = uploads.claimable(draft, all_ids)
     signature = files[payload["signature"]]
-    if signature.kind != "signature" or any(
-        not path_for(upload.normalized_key).is_file() for upload in files.values()
-    ):
+    if signature.kind != "signature":
         raise IntakeError("Eine Datei ist nicht verfügbar. Bitte lade sie erneut hoch.")
     if (
         sum(upload.size for upload in files.values() if upload.kind == "receipt")
@@ -221,22 +125,13 @@ def submit_claim(request, event_slug, data):
     )
     for row in payload["expenses"]:
         for position, file_id in enumerate(row["uploads"]):
-            upload = files[file_id]
-            if upload.kind != "receipt" or str(upload.expense_id) != row["id"]:
-                raise IntakeError("Ein Beleg gehört nicht zu dieser Auslagenposition.")
-            upload.claim, upload.position = claim, position
-            upload.save(update_fields=["claim", "position"])
+            uploads.attach(files[file_id], claim, expense_id=row["id"], position=position)
         Expense.objects.create(
             claim=claim, **{key: value for key, value in row.items() if key != "uploads"}
         )
-    signature.claim = claim
-    signature.save(update_fields=["claim"])
+    uploads.attach(signature, claim)
     draft.claim, draft.payload_hash = claim, payload_hash
     draft.expires_at = timezone.now() + timedelta(days=7)
     draft.save(update_fields=["claim", "payload_hash", "expires_at"])
     Job.objects.create(key=f"render:{claim.id}", kind="render", claim=claim)
     return claim
-
-
-def draft_receipt_bytes(draft):
-    return draft.uploads.filter(kind="receipt").aggregate(total=Sum("size"))["total"] or 0
