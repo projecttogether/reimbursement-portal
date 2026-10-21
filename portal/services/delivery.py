@@ -18,8 +18,8 @@ from django.db.models import F
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
-from portal.models import Claim, Delivery, DeliveryAttempt, DeliveryEvent, Job
-from portal.services import mailersend
+from portal.models import Claim, Delivery, DeliveryAttempt, DeliveryEvent
+from portal.services import mailersend, queue
 from portal.services.drafts import digest
 from portal.services.storage import path_for
 from portal.services.transport import (
@@ -90,9 +90,7 @@ def schedule(claim):
     delivery, _ = Delivery.objects.get_or_create(
         claim=claim, defaults={"recipient": claim.snapshot["recipient"]}
     )
-    Job.objects.get_or_create(
-        key=f"send:{delivery.pk}", defaults={"kind": "send", "delivery": delivery}
-    )
+    queue.enqueue("send", delivery)
     return delivery
 
 
@@ -213,7 +211,7 @@ def retry(claim, *, acknowledge_duplicate_risk=False):
         raise DuplicateRisk
     delivery.state, delivery.error_code = PENDING, ""
     delivery.save()
-    Job.objects.create(key=f"send:{delivery.pk}:{uuid.uuid4()}", kind="send", delivery=delivery)
+    queue.enqueue("send", delivery, again=True)
 
 
 def participant_status(claim):

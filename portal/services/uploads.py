@@ -16,6 +16,7 @@ from django.utils import timezone
 from portal import intake
 from portal.intake import IntakeError
 from portal.models import Draft, Event, Job, Upload
+from portal.services import queue
 from portal.services.capacity import CapacityError, admit_upload, release_upload
 from portal.services.drafts import authorize_draft, ensure_accepting, session_hash
 from portal.services.storage import path_for, remove_keys, save_upload, upload_source_key
@@ -29,7 +30,9 @@ UNACCEPTED_LIFETIME = timedelta(hours=24)
 
 
 def _busy(query):
-    return query.filter(Q(job__state="running") | Q(workspacereservation__isnull=False)).exists()
+    return query.filter(
+        Q(job__state=queue.RUNNING) | Q(workspacereservation__isnull=False)
+    ).exists()
 
 
 def remove_files(upload):
@@ -99,7 +102,7 @@ def accept(request, event_slug, *, file, kind, expense_id, draft_id, token):
                 checksum=checksum,
                 reserved_bytes=reservation,
             )
-            Job.objects.create(key=f"validate:{upload.id}", kind="validate", upload=upload)
+            queue.enqueue("validate", upload)
     except Exception:
         if key:
             remove_keys(key)

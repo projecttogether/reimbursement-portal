@@ -21,7 +21,8 @@ from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 
-from portal.models import CapacityLock, Draft, Job, Upload, WorkspaceReservation
+from portal.models import CapacityLock, Draft, Upload, WorkspaceReservation
+from portal.services import queue
 from portal.services.draft_limits import locked_budget
 from portal.services.storage import new_workspace_key, path_for, workspace_root
 
@@ -109,10 +110,7 @@ def admit_upload(request, draft, size):
     )
     if derived + reservation > settings.MAX_DRAFT_DERIVED_BYTES:
         raise CapacityError("draft_storage_limit")
-    if (
-        Job.objects.filter(kind="validate", state__in=["pending", "running"]).count()
-        >= settings.MAX_PENDING_VALIDATIONS
-    ):
+    if queue.validation_backlog() >= settings.MAX_PENDING_VALIDATIONS:
         raise CapacityError("validation_backlog")
     draft.upload_count += 1
     draft.upload_bytes += size

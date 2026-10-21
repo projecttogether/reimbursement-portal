@@ -17,7 +17,8 @@ from pypdf import PdfWriter
 
 from portal.document_sandbox import supported
 from portal.file_worker import DocumentError, validate_file
-from portal.jobs import acquire_job, finish_job, process_validation, reclaim_stale_jobs, run_one
+from portal.job_kinds import VALIDATE
+from portal.jobs import Lease, acquire_job, reclaim_stale_jobs, run_one
 from portal.models import (
     CapacityLock,
     Delivery,
@@ -104,7 +105,7 @@ def test_accepted_jobs_are_not_overtaken_by_replenished_validation(accepted):
             )
         current = acquire_job()
         assert current.pk == expected.pk
-        finish_job(current)
+        Lease(current).finish()
 
 
 def test_backlog_is_checked_before_source_publication(prepared, settings):
@@ -208,7 +209,7 @@ def test_stale_pdf_validator_does_not_delete_its_source(prepared, monkeypatch):
         return result
 
     monkeypatch.setattr("portal.services.documents.inspect_upload", expire_after_processing)
-    process_validation(old)
+    VALIDATE.run(old, Lease(old))
     assert path_for(item.source_key).is_file()
     assert not WorkspaceReservation.objects.exists()
 
@@ -219,14 +220,15 @@ def test_validation_reservation_survives_until_metadata_publication(prepared, mo
     current = acquire_job()
     observed = []
 
-    def finish_with_reservation(job):
+    def finish_with_reservation(lease, *args, **kwargs):
         item.refresh_from_db()
         observed.append(WorkspaceReservation.objects.filter(upload=item).exists())
         assert item.state == "ready" and item.normalized_size > 0
-        finish_job(job)
+        finish(lease, *args, **kwargs)
 
-    monkeypatch.setattr("portal.jobs.finish_job", finish_with_reservation)
-    process_validation(current)
+    finish = Lease.finish
+    monkeypatch.setattr(Lease, "finish", finish_with_reservation)
+    VALIDATE.run(current, Lease(current))
     assert observed == [True]
     assert not WorkspaceReservation.objects.exists()
 

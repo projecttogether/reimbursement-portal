@@ -10,8 +10,8 @@ from django.utils.crypto import constant_time_compare
 
 from portal.forms import ClaimForm
 from portal.intake import EXPENSE_FIELD_LENGTHS, IntakeError, message, parse_amount
-from portal.models import Claim, Event, Expense, Job
-from portal.services import uploads
+from portal.models import Claim, Event, Expense
+from portal.services import queue, uploads
 from portal.services.delivery import recipient_approved
 from portal.services.drafts import authorize_draft, digest, ensure_accepting
 
@@ -134,5 +134,5 @@ def submit_claim(request, event_slug, data):
     draft.claim, draft.payload_hash = claim, payload_hash
     draft.expires_at = timezone.now() + timedelta(days=7)
     draft.save(update_fields=["claim", "payload_hash", "expires_at"])
-    Job.objects.create(key=f"render:{claim.id}", kind="render", claim=claim)
+    queue.enqueue("render", claim)
     return claim

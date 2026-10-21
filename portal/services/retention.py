@@ -11,11 +11,10 @@ from portal.models import (
     DeliveryEvent,
     Draft,
     DraftAdmission,
-    Job,
     Upload,
     WorkspaceReservation,
 )
-from portal.services import uploads
+from portal.services import queue, uploads
 from portal.services.capacity import recover_abandoned_workspaces
 from portal.services.storage import outbox_key, remove_keys, sweep_orphans
 
@@ -32,15 +31,13 @@ def purge_claim(claim_id):
         if claim.state == Claim.State.PURGED:
             return
         if (
-            Job.objects.filter(state="running").filter(claim=claim).exists()
-            or Job.objects.filter(state="running", delivery__claim=claim).exists()
+            queue.claim_has_running_job(claim)
             or WorkspaceReservation.objects.filter(Q(claim=claim) | Q(upload__claim=claim)).exists()
         ):
             raise ClaimBusy
         claim.state = Claim.State.PURGING
         claim.save(update_fields=["state"])
-        Job.objects.filter(claim=claim).update(state="cancelled")
-        Job.objects.filter(delivery__claim=claim).update(state="cancelled")
+        queue.cancel_claim_jobs(claim)
     # Leave the manifest intact until every deletion succeeds, so a crash resumes safely.
     for upload in claim.uploads.all():
         uploads.remove_files(upload)

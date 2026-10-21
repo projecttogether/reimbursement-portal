@@ -10,6 +10,7 @@ from django.utils import timezone
 
 from portal.models import Job
 from portal.services.documents import sandbox_ready
+from portal.services.queue import PENDING, RUNNING
 from portal.services.scanner import scanner_ready
 from portal.services.storage import heartbeat_age, workspace_root
 
@@ -42,7 +43,7 @@ def bounded_workspace():
 def queue_age_seconds():
     now = timezone.now()
     oldest = (
-        Job.objects.filter(Q(state="pending", run_after__lte=now) | Q(state="running"))
+        Job.objects.filter(Q(state=PENDING, run_after__lte=now) | Q(state=RUNNING))
         .order_by("run_after")
         .values_list("run_after", flat=True)
         .first()
