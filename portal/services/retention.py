@@ -16,8 +16,8 @@ from portal.models import (
     Upload,
     WorkspaceReservation,
 )
-from portal.services.documents import ProcessingError
-from portal.services.storage import path_for, remove_keys
+from portal.services.documents import ProcessingError, remove_abandoned_workspace
+from portal.services.storage import remove_keys
 
 logger = logging.getLogger(__name__)
 
@@ -162,12 +162,9 @@ def orphan_cleanup():
     cutoff = (timezone.now() - timedelta(hours=24)).timestamp()
     root = settings.PRIVATE_STORAGE_ROOT
     for reservation in WorkspaceReservation.objects.filter(
-        created_at__lt=timezone.now() - timedelta(hours=24)
+        created_at__lt=timezone.now() - timedelta(seconds=settings.JOB_LEASE_SECONDS)
     ):
-        directory = path_for(reservation.directory)
-        if directory.exists():
-            shutil.rmtree(directory)
-        reservation.delete()
+        remove_abandoned_workspace(reservation)
     for directory in (root / "uploads").glob("*"):
         if directory.is_dir() and directory.stat().st_mtime < cutoff:
             try:

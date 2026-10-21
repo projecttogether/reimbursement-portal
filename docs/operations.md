@@ -25,6 +25,7 @@ recipient, Finance contact, privacy notice/version, dates/deadline, and set
 `active=true`. Do not use placeholder text or the demo notice with real data.
 
 ```bash
+docker compose stop web worker
 docker compose run --rm web python manage.py migrate
 docker compose run --rm -v /approved/event.json:/tmp/event.json:ro web \
   python manage.py configure_event /tmp/event.json
@@ -33,7 +34,8 @@ docker compose up -d web worker
 
 Configuration updates increment the event revision. Unsubmitted forms from an
 older revision must reload and review again; accepted claims keep their original
-configuration snapshot. Run migrations once before replacing the web/worker.
+configuration snapshot. Stop web and worker before migrations, then replace both
+with the new image. Old workers must not create reservations during this upgrade.
 Only one worker process is supported operationally; its queue uses row locks and
 leases and acquires ready jobs in FIFO order across validation, rendering and
 sending. Later uploads cannot indefinitely overtake accepted claims.
@@ -49,6 +51,9 @@ their own workspace, and cannot open network sockets. Keep the private 700 MB
 tmpfs mount at `PRIVATE_STORAGE_ROOT/work` on both web and worker. Startup rejects
 a missing, shared or unbounded workspace in production. This mount is separate
 from persistent source/PDF storage; publishing copies files atomically between them.
+Workspace reservations charge the tmpfs allowance there and reserve only the
+bounded normalized/final output on persistent storage. Local setups sharing one
+filesystem reserve both against that filesystem.
 Keep the supplied web/worker limit of 64 processes/threads per container. The
 syscall filter also denies signaling and changing another process's resource or
 scheduling limits, including pidfd and queued-signal variants.
@@ -155,9 +160,19 @@ code locations while excluding exception values, source text, bodies, paths,
 headers and local variables. Use request IDs and operational references to
 investigate failures without putting financial content in logs.
 
-The worker reclaims expired leases and runs cleanup each minute. Rendering can be
+The worker reclaims expired leases and runs cleanup each minute. Reservations older
+than a job lease are reclaimed when their execution lock is free, including after
+a restart clears tmpfs. Both supervisor and parser hold the lock, so a stale job
+cannot cause cleanup to remove a live parser's workspace. An interrupted
+validation keeps its admitted output reservation while awaiting another attempt.
+Rendering can be
 reclaimed; interrupted sends become unknown. It retries only known pre-acceptance
 email failures and transient scanner outages, with bounded backoff.
+
+Queue age measures waiting time since `run_after` for runnable/running jobs.
+Scheduled backoffs do not fail readiness; a newly due retry gets a fresh waiting
+interval. `claim_status` uses the same measure. Transient sandbox probe failures
+are retried by the next readiness request; successful probes remain cached.
 
 Schedule `reconcile_deliveries` every 15 minutes in the host's scheduler and
 monitor its exit status. It rotates through bounded batches, including failed

@@ -51,6 +51,7 @@ DENIED_SYSCALLS = (
     "sched_setattr",
     "sched_setaffinity",
     "ioprio_set",
+    "flock",
     "open_by_handle_at",
     "mount",
     "umount2",

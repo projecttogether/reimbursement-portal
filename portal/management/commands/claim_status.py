@@ -4,6 +4,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from portal.models import Claim, Job
+from portal.services.readiness import queue_age_seconds
 
 
 class Command(BaseCommand):
@@ -38,17 +39,13 @@ class Command(BaseCommand):
                     }
                 )
             )
-        oldest = Job.objects.filter(state__in=["pending", "running"]).order_by("created_at").first()
+        age = queue_age_seconds()
         self.stdout.write(
             json.dumps(
                 {
                     "pending_jobs": Job.objects.filter(state="pending").count(),
                     "failed_jobs": Job.objects.filter(state="failed").count(),
-                    "oldest_job_age_seconds": int(
-                        (timezone.now() - oldest.created_at).total_seconds()
-                    )
-                    if oldest
-                    else 0,
+                    "oldest_job_age_seconds": age,
                 }
             )
         )

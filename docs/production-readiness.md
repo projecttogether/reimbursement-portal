@@ -12,7 +12,7 @@ apply migrations before replacing web and worker processes.
 | Improvement | Enforcement | Regression evidence |
 | --- | --- | --- |
 | Accepted work progresses during uploads | FIFO acquisition across ready job kinds; cumulative draft/network work budgets and bounded backlog | Replenished validation queue and upload replacement tests |
-| Derived files preserve storage capacity | Locked global admission, pending-byte and execution reservations, 10 MB normalized-file cap, image resizing, bounded tmpfs workspace | Amplification, output-limit, cleanup and competing-draft tests |
+| Derived files preserve storage capacity | Locked admission, separate workspace/output reservations, execution locks, 10 MB normalized-file cap, image resizing, bounded tmpfs | Amplification, output-limit, crash recovery, low persistent space and competing-draft tests |
 | Production settings fail closed | Explicit development opt-in and production startup/deploy checks | Unsafe-mode configuration subprocess tests |
 | Errors are observable without financial content | Generated request IDs, safe HTTP/access logs, redacted exception stacks and readiness checks | Real HTTP 500 with private message/path/header assertions; dead-worker readiness test |
 | Validation errors remain actionable | Visible field summary, details-step restoration, focused invalid field and renewed acknowledgments | Mobile browser IBAN/date rejection cases |
@@ -53,7 +53,7 @@ off-host production backup, retention and key custody still need deployment evid
 | Two 250-participant bursts, each with a 10-second worker pause | 250/250 completions and zero failures in each run; p95 totals 499.862 s and 524.520 s |
 | Second-run worker cgroup | 140.5 MiB peak memory under the 2 GB limit; zero OOM events |
 | Second-run storage and isolated restore | 1,750 files verified; 250 claims restored and purged; zero integrity/deletion failures |
-| Final PostgreSQL CI | 120 tests passed; lint, formatting, schema drift, production startup checks and runtime image build passed |
+| Final PostgreSQL CI | 138 tests passed; lint, formatting, schema drift, production startup checks and runtime image build passed |
 | Browser checks | Desktop/mobile completion, visible IBAN/date errors, transient polling, repeated signature replacement and obsolete-signature rejection passed |
 | Maximum document | Confined assembly retained all 100 receipt pages plus the summary within the 10 MB cap |
 
@@ -63,6 +63,13 @@ After the independent review tightened process-control syscall restrictions and
 signature recovery, a separate one-participant HTTP/restore/deletion run and the
 full CI/browser regressions passed. These results establish local capacity;
 repeat the workload on the selected deployment hardware with staging dependencies.
+
+PR review regressions also cover scheduled-retry readiness, recovery from failed
+sandbox probes, abandoned workspaces, inherited execution locks after supervisor
+SIGKILL and migration of existing output reservations. A separate HTTP run with
+1,153,257,472 bytes free on the output filesystem and a distinct 700 MiB workspace
+completed successfully and verified all seven files. This exercises rendering
+below the previous incorrect 600 MB persistent-workspace threshold.
 
 ## Required staging and owner evidence
 

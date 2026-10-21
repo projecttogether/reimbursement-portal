@@ -264,6 +264,7 @@ class WorkspaceReservation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     directory = models.CharField(max_length=200, unique=True)
     size = models.PositiveIntegerField()
+    output_bytes = models.PositiveIntegerField(default=0)
     upload = models.ForeignKey(Upload, null=True, blank=True, on_delete=models.PROTECT)
     claim = models.ForeignKey(Claim, null=True, blank=True, on_delete=models.PROTECT)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)

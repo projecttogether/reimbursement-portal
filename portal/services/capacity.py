@@ -20,14 +20,26 @@ def total(query, field):
     return query.aggregate(value=Sum(field))["value"] or 0
 
 
-def check_storage(additional):
-    """Caller holds an atomic transaction; the lock lasts through publication."""
+def workspace_uses_private_storage():
+    root = settings.PRIVATE_STORAGE_ROOT
+    workspace = root / "work"
+    return not workspace.exists() or workspace.stat().st_dev == root.stat().st_dev
+
+
+def lock_storage():
     if not transaction.get_connection().in_atomic_block:
         raise RuntimeError("Capacity admission requires a transaction")
     CapacityLock.objects.select_for_update().get_or_create(pk=1)
+
+
+def check_storage(additional):
+    """Caller holds an atomic transaction; the lock lasts through publication."""
+    lock_storage()
     reserved = total(Upload.objects.all(), "reserved_bytes") + total(
-        WorkspaceReservation.objects.all(), "size"
+        WorkspaceReservation.objects.all(), "output_bytes"
     )
+    if workspace_uses_private_storage():
+        reserved += total(WorkspaceReservation.objects.all(), "size")
     free = shutil.disk_usage(settings.PRIVATE_STORAGE_ROOT).free
     if free < (
         settings.MIN_FREE_STORAGE_BYTES

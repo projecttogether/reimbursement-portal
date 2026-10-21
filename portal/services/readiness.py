@@ -10,6 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from django.conf import settings
+from django.db.models import Q
 from django.utils import timezone
 
 from portal.models import Job
@@ -40,21 +41,40 @@ def bounded_workspace():
         return False
 
 
-@lru_cache(maxsize=16)
 def sandbox_operational(root):
     try:
-        Path(root).mkdir(exist_ok=True, mode=0o700)
-        with tempfile.TemporaryDirectory(dir=root, prefix="job-probe-") as workspace:
-            result = subprocess.run(
-                [sys.executable, "-m", "portal.document_sandbox", "--self-test", workspace],
-                cwd=settings.BASE_DIR,
-                env={"PATH": os.defpath, "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"},
-                capture_output=True,
-                timeout=5,
-            )
-            return result.returncode == 0 and result.stdout.strip() == b"sandbox_ok"
+        return successful_sandbox_probe(root)
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+@lru_cache(maxsize=16)
+def successful_sandbox_probe(root):
+    # lru_cache retains successes only. Exceptions leave transient failures retryable.
+    Path(root).mkdir(exist_ok=True, mode=0o700)
+    with tempfile.TemporaryDirectory(dir=root, prefix="job-probe-") as workspace:
+        result = subprocess.run(
+            [sys.executable, "-m", "portal.document_sandbox", "--self-test", workspace],
+            cwd=settings.BASE_DIR,
+            env={"PATH": os.defpath, "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"},
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode != 0 or result.stdout.strip() != b"sandbox_ok":
+            raise OSError("Document sandbox probe failed")
+    return True
+
+
+def queue_age_seconds():
+    now = timezone.now()
+    oldest = (
+        Job.objects.filter(Q(state="pending", run_after__lte=now) | Q(state="running"))
+        .order_by("run_after")
+        .values_list("run_after", flat=True)
+        .first()
+    )
+    # A retry starts waiting when its backoff ends, regardless of original creation.
+    return max(0, int((now - oldest).total_seconds())) if oldest else 0
 
 
 def dependencies():
@@ -82,7 +102,6 @@ def dependencies():
                 result["scanner"] = scanner.recv(32).strip(b"\0\r\n") == b"PONG"
         except OSError:
             result["scanner"] = False
-    oldest = Job.objects.filter(state__in=["pending", "running"]).order_by("created_at").first()
-    age = max(0, int((timezone.now() - oldest.created_at).total_seconds())) if oldest else 0
+    age = queue_age_seconds()
     result["queue"] = age <= settings.MAX_JOB_AGE_SECONDS
     return result, age

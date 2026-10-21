@@ -280,7 +280,7 @@ def test_parser_has_no_unrelated_files_network_or_process_authority(tmp_path):
     private = tmp_path / "unrelated.env"
     private.write_text("synthetic private value")
     code = """
-import ctypes, json, os, resource, signal, socket, struct
+import ctypes, fcntl, json, os, resource, signal, socket, struct
 from pathlib import Path
 from portal.document_sandbox import install, libraries
 workspace, allowed, private = map(Path, __import__('sys').argv[1:])
@@ -295,6 +295,8 @@ queue_number = seccomp.seccomp_syscall_resolve_name(b'rt_tgsigqueueinfo')
 info = ctypes.create_string_buffer(128)
 struct.pack_into('iii', info, 0, 0, 0, -1)
 struct.pack_into('ii', info, 16, os.getpid(), os.getuid())
+execution_lock = (workspace.parent / 'execution.lock').open('a+b')
+fcntl.flock(execution_lock, fcntl.LOCK_SH)
 def native(operation):
  if operation() == -1:
   raise OSError(ctypes.get_errno(), 'native syscall denied')
@@ -318,6 +320,7 @@ for name, operation in [
  ('parent_affinity', lambda: os.sched_setaffinity(parent, affinity)),
  ('parent_scheduler', lambda: os.sched_setscheduler(parent, policy, parameter)),
  ('parent_schedparam', lambda: os.sched_setparam(parent, parameter)),
+ ('execution_unlock', lambda: fcntl.flock(execution_lock, fcntl.LOCK_UN)),
  ('outside_create', lambda: (workspace.parent / 'escape').write_text('changed')),
 ]:
  try: operation()
@@ -333,5 +336,5 @@ print(json.dumps(denied))
         timeout=10,
     )
     assert result.returncode == 0, result.stderr
-    assert len(json.loads(result.stdout)) == 17
+    assert len(json.loads(result.stdout)) == 18
     assert private.read_text() == "synthetic private value"
