@@ -39,6 +39,8 @@ def api_errors(view):
 
 @require_GET
 def index(request):
+    if settings.PORTAL_ROLE == "web":
+        return redirect("event_form", event_slug=settings.EVENT_SLUG)
     events = [event for event in Event.objects.filter(active=True) if event.is_open()]
     if len(events) == 1:
         return redirect("event_form", event_slug=events[0].slug)
@@ -154,8 +156,11 @@ def submit(request, event_slug):
 
 @require_GET
 def received(request, claim_id):
+    claims = Claim.objects.all()
+    if settings.PORTAL_ROLE == "web":
+        claims = claims.filter(event__slug=settings.EVENT_SLUG)
     claim = get_object_or_404(
-        Claim, pk=claim_id, accepted_draft__session_hash=session_hash(request)
+        claims, pk=claim_id, accepted_draft__session_hash=session_hash(request)
     )
     status, final = delivery.participant_status(claim)
     if request.GET.get("format") == "json":

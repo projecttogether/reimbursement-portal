@@ -2,7 +2,31 @@ import uuid
 
 from django.conf import settings
 from django.core.files.uploadhandler import StopUpload, TemporaryFileUploadHandler
-from django.http import JsonResponse
+from django.http import Http404, JsonResponse
+
+
+class EventScopeMiddleware:
+    """Expose this deployment's intake or shared webhook routes, as configured."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        return self.get_response(request)
+
+    def process_view(self, request, view_func, view_args, view_kwargs):
+        role = settings.PORTAL_ROLE
+        name = request.resolver_match.url_name
+        if role == "standalone" or name in {"healthz", "readyz"}:
+            return None
+        if role == "webhook":
+            if name != "mailersend_webhook":
+                raise Http404
+        elif role == "worker" or name == "mailersend_webhook":
+            raise Http404
+        elif "event_slug" in view_kwargs and view_kwargs["event_slug"] != settings.EVENT_SLUG:
+            raise Http404
+        return None
 
 
 class BoundedUploadHandler(TemporaryFileUploadHandler):
