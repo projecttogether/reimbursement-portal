@@ -6,7 +6,6 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -18,7 +17,8 @@ from pypdf import PdfWriter
 
 from portal.document_sandbox import supported
 from portal.file_worker import DocumentError, validate_file
-from portal.jobs import acquire_job, finish_job, process_validation, reclaim_stale_jobs, run_one
+from portal.job_kinds import VALIDATE
+from portal.jobs import Lease, acquire_job, reclaim_stale_jobs, run_one
 from portal.models import (
     CapacityLock,
     Delivery,
@@ -28,7 +28,7 @@ from portal.models import (
     Upload,
     WorkspaceReservation,
 )
-from portal.services.documents import temporary_workspace
+from portal.services.capacity import temporary_workspace
 from portal.services.retention import cleanup
 from portal.services.storage import path_for
 from tests.conftest import image_bytes
@@ -105,7 +105,7 @@ def test_accepted_jobs_are_not_overtaken_by_replenished_validation(accepted):
             )
         current = acquire_job()
         assert current.pk == expected.pk
-        finish_job(current)
+        Lease(current).finish()
 
 
 def test_backlog_is_checked_before_source_publication(prepared, settings):
@@ -166,7 +166,7 @@ def test_workspace_cleanup_failure_keeps_reservation(prepared, monkeypatch):
     item = Upload.objects.get(pk=response.json()["id"])
     with monkeypatch.context() as patch:
         patch.setattr(
-            "portal.services.documents.shutil.rmtree",
+            "portal.services.capacity.shutil.rmtree",
             lambda path: (_ for _ in ()).throw(OSError("synthetic")),
         )
         with pytest.raises(OSError):
@@ -201,15 +201,15 @@ def test_stale_pdf_validator_does_not_delete_its_source(prepared, monkeypatch):
     response = upload_file(prepared, content=output.getvalue(), name="source.pdf")
     item = Upload.objects.get(pk=response.json()["id"])
     old = acquire_job()
-    from portal.services.documents import run_document_process
+    from portal.services.documents import inspect_upload
 
     def expire_after_processing(*args, **kwargs):
-        result = run_document_process(*args, **kwargs)
+        result = inspect_upload(*args, **kwargs)
         Job.objects.filter(pk=old.pk).update(lease_token=uuid.uuid4())
         return result
 
-    monkeypatch.setattr("portal.services.documents.run_document_process", expire_after_processing)
-    process_validation(old)
+    monkeypatch.setattr("portal.services.documents.inspect_upload", expire_after_processing)
+    VALIDATE.run(old, Lease(old))
     assert path_for(item.source_key).is_file()
     assert not WorkspaceReservation.objects.exists()
 
@@ -220,20 +220,21 @@ def test_validation_reservation_survives_until_metadata_publication(prepared, mo
     current = acquire_job()
     observed = []
 
-    def finish_with_reservation(job):
+    def finish_with_reservation(lease, *args, **kwargs):
         item.refresh_from_db()
         observed.append(WorkspaceReservation.objects.filter(upload=item).exists())
         assert item.state == "ready" and item.normalized_size > 0
-        finish_job(job)
+        finish(lease, *args, **kwargs)
 
-    monkeypatch.setattr("portal.jobs.finish_job", finish_with_reservation)
-    process_validation(current)
+    finish = Lease.finish
+    monkeypatch.setattr(Lease, "finish", finish_with_reservation)
+    VALIDATE.run(current, Lease(current))
     assert observed == [True]
     assert not WorkspaceReservation.objects.exists()
 
 
 @pytest.mark.django_db(transaction=True)
-def test_competing_drafts_cannot_reserve_the_same_last_space(event, settings, monkeypatch):
+def test_competing_drafts_cannot_reserve_the_same_last_space(event, settings, fake_disk):
     if connection.vendor != "postgresql":
         pytest.skip("Concurrent row locking requires PostgreSQL")
     CapacityLock.objects.get_or_create(pk=1)
@@ -244,9 +245,7 @@ def test_competing_drafts_cannot_reserve_the_same_last_space(event, settings, mo
     free = (
         settings.UPLOAD_TEMP_HEADROOM_BYTES + settings.MAX_NORMALIZED_FILE_BYTES + len(content) * 2
     )
-    monkeypatch.setattr(
-        "portal.services.capacity.shutil.disk_usage", lambda path: SimpleNamespace(free=free)
-    )
+    fake_disk(free)
 
     def submit(client):
         close_old_connections()

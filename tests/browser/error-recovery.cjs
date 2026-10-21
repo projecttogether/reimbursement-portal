@@ -149,7 +149,7 @@ if (!fixtures)
       return route.fulfill(
         receiptPolls === 1
           ? { status: 503, json: {} }
-          : { status: 200, json: { state: "delivered" } },
+          : { status: 200, json: { state: "delivered", final: true } },
       );
     });
     await page.goto(`${base}/received/synthetic/`);

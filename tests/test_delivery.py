@@ -1,15 +1,18 @@
 import hashlib
 import hmac
+import io
 import json
 from datetime import timedelta
 
 import httpx
 import pytest
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.utils import timezone
 
 from portal.jobs import reclaim_stale_jobs, run_one
-from portal.models import Claim, Delivery, DeliveryAttempt, DeliveryEvent, Job
+from portal.models import Claim, Delivery, DeliveryAttempt, DeliveryEvent, Job, Operation
+from portal.services import delivery as deliveries
 from portal.services import mailersend
 from portal.services.delivery import ingest_event
 from portal.services.storage import path_for
@@ -67,7 +70,7 @@ def test_provider_outcomes(delivery, settings, monkeypatch, response, state, cod
     settings.MAIL_DELIVERY_MODE = "mailersend"
     mock_provider(monkeypatch, lambda request: response)
     attempt = DeliveryAttempt.objects.create(delivery=delivery)
-    result = mailersend.send_pdf(attempt)
+    result = deliveries.send(attempt)
     assert (result.state, result.error_code) == (state, code)
 
 
@@ -202,7 +205,7 @@ def test_stale_send_lease_becomes_unknown(delivery):
 
 def test_staging_recipient_guard_blocks_even_configured_address(delivery, settings):
     settings.TEST_RECIPIENT_ALLOWLIST = ["test-only@example.invalid"]
-    result = mailersend.send_pdf(DeliveryAttempt.objects.create(delivery=delivery))
+    result = deliveries.send(DeliveryAttempt.objects.create(delivery=delivery))
     assert result.error_code == "test_recipient_blocked"
 
 
@@ -274,3 +277,99 @@ def test_rejected_snapshot_cannot_fail_another_recipient(delivery, monkeypatch):
     attempt.refresh_from_db()
     assert attempt.state == "provider_accepted"
     assert not DeliveryEvent.objects.get().applied
+
+
+def test_failure_before_transmission_is_definite_and_retryable(delivery, settings, monkeypatch):
+    settings.MAIL_DELIVERY_MODE = "mailersend"
+    calls = []
+    mock_provider(monkeypatch, lambda request: calls.append(request))
+    path_for(delivery.claim.pdf_key).unlink()
+    Job.objects.create(key="send-test", kind="send", delivery=delivery)
+    assert run_one()
+    delivery.refresh_from_db()
+    attempt = delivery.attempts.get()
+    assert (attempt.state, attempt.error_code) == ("failed", "attachment_unavailable")
+    assert delivery.state == "failed" and not calls
+    call_command(
+        "retry_claim", delivery.claim.reference, reason="restored PDF", stdout=io.StringIO()
+    )
+    delivery.refresh_from_db()
+    assert delivery.state == "pending"
+    assert Job.objects.filter(kind="send", state="pending").count() == 1
+
+
+@pytest.mark.parametrize(
+    ("initial", "expected"), [("send_unknown", "provider_accepted"), ("paused", "paused")]
+)
+def test_queued_snapshot_resolves_only_an_unknown_outcome(delivery, monkeypatch, initial, expected):
+    attempt = DeliveryAttempt.objects.create(
+        delivery=delivery, message_id="queued-message", state=initial
+    )
+    monkeypatch.setattr(
+        "portal.services.mailersend.retrieve_message",
+        lambda message_id: {"emails": [{"status": "queued", "to": delivery.recipient}]},
+    )
+    call_command("reconcile_deliveries", stdout=io.StringIO())
+    attempt.refresh_from_db()
+    assert attempt.state == expected
+    assert DeliveryEvent.objects.get().applied
+
+
+@pytest.mark.parametrize("state", ["send_unknown", "provider_accepted", "delivered"])
+def test_operator_resend_requires_duplicate_risk_acknowledgment(delivery, state):
+    DeliveryAttempt.objects.create(delivery=delivery, state=state, message_id="message-1")
+    deliveries.refresh(delivery)
+    reference = delivery.claim.reference
+    with pytest.raises(CommandError, match="acknowledge-duplicate-risk"):
+        call_command("retry_claim", reference, reason="check", stdout=io.StringIO())
+    assert not Job.objects.exists()
+    call_command(
+        "retry_claim",
+        reference,
+        reason="provider confirmed no delivery",
+        actor="operator",
+        acknowledge_duplicate_risk=True,
+        stdout=io.StringIO(),
+    )
+    delivery.refresh_from_db()
+    assert delivery.state == "pending"
+    assert Operation.objects.get().actor == "operator"
+    with pytest.raises(CommandError, match="active job"):
+        call_command("retry_claim", reference, reason="again", stdout=io.StringIO())
+
+
+def test_failed_render_is_requeued_without_duplicate_risk(accepted):
+    Job.objects.all().delete()
+    accepted.state, accepted.error_code = Claim.State.FAILED, "document_timeout"
+    accepted.save()
+    call_command("retry_claim", accepted.reference, reason="timeout", stdout=io.StringIO())
+    accepted.refresh_from_db()
+    assert (accepted.state, accepted.error_code) == (Claim.State.RECEIVED, "")
+    assert Job.objects.get().kind == "render"
+
+
+@pytest.mark.parametrize(
+    ("claim_state", "delivery_state", "status", "final"),
+    [
+        (Claim.State.RENDERING, None, "rendering", False),
+        (Claim.State.FAILED, None, "processing_failed", True),
+        (Claim.State.READY, "send_unknown", "send_unknown", False),
+        (Claim.State.READY, "failed", "delivery_failed", True),
+        (Claim.State.READY, "delivered", "delivered", True),
+    ],
+)
+def test_participant_sees_one_status_vocabulary(
+    prepared, claim_state, delivery_state, status, final
+):
+    client = prepared["client"]
+    response = client.post(
+        "/forms/test/submit/", data=json.dumps(prepared["data"]), content_type="application/json"
+    )
+    claim = Claim.objects.get()
+    Claim.objects.filter(pk=claim.pk).update(state=claim_state)
+    if delivery_state:
+        Delivery.objects.create(
+            claim=claim, recipient="finance@example.invalid", state=delivery_state
+        )
+    result = client.get(f"{response.json()['receipt_url']}?format=json").json()
+    assert (result["state"], result["final"]) == (status, final)

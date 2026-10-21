@@ -94,16 +94,28 @@
     }
     return result;
   }
+  const amountFormat = new RegExp(`^(?:${config.amount_pattern})$`);
+  function precision(currency) {
+    return config.currency_precision[currency] ?? 2;
+  }
   function money(amount, currency) {
     return new Intl.NumberFormat("de-DE", {
       style: "currency",
       currency,
-    }).format(Number(amount) / 100);
+      minimumFractionDigits: precision(currency),
+      maximumFractionDigits: precision(currency),
+    }).format(Number(amount) / 10 ** precision(currency));
   }
-  function cents(value) {
-    if (!/^\d{1,9}(?:[,.]\d{1,2})?$/.test(value.trim())) return null;
+  // Exact amount in the currency's minor units, or null when the server would reject it.
+  function minorUnits(value, currency) {
+    if (!amountFormat.test(value.trim())) return null;
     const [whole, fraction = ""] = value.trim().replace(",", ".").split(".");
-    return BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
+    const digits = precision(currency);
+    if (fraction.length > digits) return null;
+    return (
+      BigInt(whole) * 10n ** BigInt(digits) +
+      BigInt(fraction.padEnd(digits, "0") || "0")
+    );
   }
   function rowData(row) {
     return Object.fromEntries(
@@ -119,7 +131,7 @@
     let duplicate = false;
     rows.forEach((row) => {
       const data = rowData(row),
-        amount = cents(data.amount);
+        amount = minorUnits(data.amount, data.currency);
       if (amount !== null)
         totals[data.currency] = (totals[data.currency] || 0n) + amount;
       const reference = data.receipt_reference
@@ -161,7 +173,7 @@
         rows.length === 1;
     });
     document.getElementById("add-expense").disabled =
-      rows.length >= config.max_expenses;
+      rows.length >= config.limits.expenses;
     updateTotals();
   }
   function renderFiles(row) {
@@ -321,7 +333,7 @@
     return delayed;
   }
   function addRow() {
-    if (rows.length >= config.max_expenses) return;
+    if (rows.length >= config.limits.expenses) return;
     const element = document
       .getElementById("expense-template")
       .content.firstElementChild.cloneNode(true);
@@ -359,8 +371,11 @@
       .addEventListener("change", async (event) => {
         const selected = [...event.target.files];
         event.target.value = "";
-        if (selected.length + row.files.length > 3) {
-          showError("Pro Position sind höchstens 3 Belegdateien erlaubt.");
+        if (
+          selected.length + row.files.length >
+          config.limits.files_per_expense
+        ) {
+          showError(config.messages.files_per_expense_exceeded);
           return;
         }
         const existingBytes = rows
@@ -368,16 +383,17 @@
           .reduce((sum, file) => sum + file.size, 0);
         if (
           existingBytes + selected.reduce((sum, file) => sum + file.size, 0) >
-          config.max_submission_bytes
+          config.limits.submission_bytes
         ) {
-          showError("Alle Belege zusammen dürfen höchstens 50 MB groß sein.");
+          showError(config.messages.submission_too_large);
           return;
         }
         for (const selectedFile of selected) {
-          if (!selectedFile.size || selectedFile.size > config.max_file_bytes) {
-            showError(
-              "Jede Belegdatei muss zwischen 1 Byte und 10 MB groß sein.",
-            );
+          if (
+            !selectedFile.size ||
+            selectedFile.size > config.limits.receipt_bytes
+          ) {
+            showError(config.messages.receipt_size);
             continue;
           }
           const file = {
@@ -427,8 +443,7 @@
     hasInk = false;
     document.getElementById("retry-signature").hidden = true;
     document.getElementById("signature-file").value = "";
-    signatureStatus.textContent =
-      "Mit Finger, Stift oder Maus unterschreiben oder ein Bild hochladen. JPG/PNG, höchstens 1 MB.";
+    signatureStatus.textContent = config.messages.signature_hint;
   }
   async function uploadSignature(blob) {
     try {
@@ -528,8 +543,8 @@
     .addEventListener("change", async (event) => {
       const file = event.target.files[0];
       if (!file) return;
-      if (file.size > 1000000 || !file.size) {
-        showError("Die Unterschrift darf höchstens 1 MB groß sein.");
+      if (file.size > config.limits.signature_bytes || !file.size) {
+        showError(config.messages.signature_too_large);
         return;
       }
       await signatureAction(async () => {
@@ -576,7 +591,8 @@
     }
     if (
       rows.some((row) => {
-        const amount = cents(rowData(row).amount);
+        const data = rowData(row);
+        const amount = minorUnits(data.amount, data.currency);
         return amount === null || amount <= 0n;
       })
     ) {
@@ -586,9 +602,10 @@
     if (
       rows
         .flatMap((row) => row.files)
-        .reduce((sum, file) => sum + (file.pages || 0), 0) > 100
+        .reduce((sum, file) => sum + (file.pages || 0), 0) >
+      config.limits.claim_pages
     ) {
-      showError("Alle Belege zusammen dürfen höchstens 100 Seiten enthalten.");
+      showError(config.messages.claim_pages);
       return;
     }
     const content = document.getElementById("review-content");
@@ -614,7 +631,7 @@
       item.append(
         node(
           "strong",
-          `${index + 1}. ${data.merchant} · ${money(cents(data.amount), data.currency)}`,
+          `${index + 1}. ${data.merchant} · ${money(minorUnits(data.amount, data.currency), data.currency)}`,
         ),
         node("p", `${data.purpose} · Referenz ${data.receipt_reference}`),
         node("small", row.files.map((file) => file.name).join(" · ")),

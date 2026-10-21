@@ -2,14 +2,13 @@ import json
 import logging
 import time
 
-from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import close_old_connections
-from django.utils import timezone
 
 from portal.jobs import reclaim_stale_jobs, run_one
 from portal.services.delivery import reconcile_unmatched
 from portal.services.retention import cleanup
+from portal.services.storage import write_heartbeat
 
 
 class Command(BaseCommand):
@@ -33,9 +32,7 @@ class Command(BaseCommand):
                             "maintenance_attention %s", json.dumps(result)
                         )
                     last_maintenance = time.monotonic()
-                (settings.PRIVATE_STORAGE_ROOT / "worker-heartbeat").write_text(
-                    timezone.now().isoformat()
-                )
+                write_heartbeat()
                 processed = run_one()
                 if options["once"] or (options["drain"] and not processed):
                     return

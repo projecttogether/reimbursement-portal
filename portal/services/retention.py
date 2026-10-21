@@ -1,5 +1,4 @@
 import logging
-import shutil
 from datetime import timedelta
 
 from django.conf import settings
@@ -12,14 +11,18 @@ from portal.models import (
     DeliveryEvent,
     Draft,
     DraftAdmission,
-    Job,
     Upload,
     WorkspaceReservation,
 )
-from portal.services.documents import ProcessingError, remove_abandoned_workspace
-from portal.services.storage import remove_keys
+from portal.services import queue, uploads
+from portal.services.capacity import recover_abandoned_workspaces
+from portal.services.storage import outbox_key, remove_keys, sweep_orphans
 
 logger = logging.getLogger(__name__)
+
+
+class ClaimBusy(Exception):
+    """A job or execution workspace still uses the claim; purge later."""
 
 
 def purge_claim(claim_id):
@@ -28,23 +31,21 @@ def purge_claim(claim_id):
         if claim.state == Claim.State.PURGED:
             return
         if (
-            Job.objects.filter(state="running").filter(claim=claim).exists()
-            or Job.objects.filter(state="running", delivery__claim=claim).exists()
+            queue.claim_has_running_job(claim)
             or WorkspaceReservation.objects.filter(Q(claim=claim) | Q(upload__claim=claim)).exists()
         ):
-            raise ProcessingError("claim_busy")
+            raise ClaimBusy
         claim.state = Claim.State.PURGING
         claim.save(update_fields=["state"])
-        Job.objects.filter(claim=claim).update(state="cancelled")
-        Job.objects.filter(delivery__claim=claim).update(state="cancelled")
+        queue.cancel_claim_jobs(claim)
     # Leave the manifest intact until every deletion succeeds, so a crash resumes safely.
     for upload in claim.uploads.all():
-        remove_keys(upload.source_key, upload.normalized_key)
+        uploads.remove_files(upload)
     remove_keys(claim.pdf_key)
     delivery = getattr(claim, "delivery", None)
     if delivery:
         for attempt in delivery.attempts.all():
-            remove_keys(f"outbox/{attempt.id}.eml")
+            remove_keys(outbox_key(attempt.id))
     with transaction.atomic():
         claim = Claim.objects.select_for_update().get(pk=claim_id)
         if delivery:
@@ -113,42 +114,16 @@ def cleanup(*, execute=False):
             continue
         try:
             purge_claim(claim_id)
-        except (OSError, ProcessingError):
+        except (OSError, ClaimBusy):
             result["failures"] += 1
             logger.error("purge_failed reference=%s", claim_id)
     for draft_id in drafts:
-        with transaction.atomic():
-            draft = (
-                Draft.objects.select_for_update().filter(pk=draft_id, claim__isnull=True).first()
-            )
-            if (
-                not draft
-                or Job.objects.filter(upload__draft=draft, state="running").exists()
-                or WorkspaceReservation.objects.filter(upload__draft=draft).exists()
-            ):
-                continue
-            try:
-                for upload in draft.uploads.all():
-                    remove_keys(upload.source_key, upload.normalized_key)
-                draft.delete()
-            except OSError:
-                result["failures"] += 1
+        try:
+            uploads.expire_draft(draft_id)
+        except OSError:
+            result["failures"] += 1
     Draft.objects.filter(claim__state=Claim.State.PURGED, expires_at__lt=now).delete()
-    # Accepted drafts can contain uploads removed from the final manifest. Those
-    # files retain the draft lifetime rather than the claim's longer retention.
-    unused = Upload.objects.filter(
-        claim__isnull=True, draft__claim__isnull=False, created_at__lt=now - timedelta(hours=24)
-    )
-    for upload in unused:
-        if (
-            not Job.objects.filter(upload=upload, state="running").exists()
-            and not WorkspaceReservation.objects.filter(upload=upload).exists()
-        ):
-            try:
-                remove_keys(upload.source_key, upload.normalized_key)
-                upload.delete()
-            except OSError:
-                result["failures"] += 1
+    result["failures"] += uploads.expire_unattached(now)
     DeliveryEvent.objects.filter(
         attempt__isnull=True, received_at__lt=now - timedelta(days=30)
     ).delete()
@@ -158,46 +133,20 @@ def cleanup(*, execute=False):
     return result
 
 
+class StoredOwners:
+    """Database ownership of stored artifacts, for the storage orphan sweep."""
+
+    def upload_keys(self, upload_id):
+        upload = Upload.objects.filter(pk=upload_id).first()
+        return {upload.source_key, upload.normalized_key} if upload else None
+
+    def workspace_reserved(self, key):
+        return WorkspaceReservation.objects.filter(directory=key).exists()
+
+    def pdf_referenced(self, key):
+        return Claim.objects.filter(pdf_key=key).exists()
+
+
 def orphan_cleanup():
-    cutoff = (timezone.now() - timedelta(hours=24)).timestamp()
-    root = settings.PRIVATE_STORAGE_ROOT
-    for reservation in WorkspaceReservation.objects.filter(
-        created_at__lt=timezone.now() - timedelta(seconds=settings.JOB_LEASE_SECONDS)
-    ):
-        remove_abandoned_workspace(reservation)
-    for directory in (root / "uploads").glob("*"):
-        if directory.is_dir() and directory.stat().st_mtime < cutoff:
-            try:
-                exists = Upload.objects.filter(pk=directory.name).exists()
-            except (ValueError, TypeError):
-                continue
-            if not exists:
-                shutil.rmtree(directory)
-            else:
-                upload = Upload.objects.get(pk=directory.name)
-                retained = {upload.source_key, upload.normalized_key}
-                for file in directory.iterdir():
-                    if (
-                        file.is_file()
-                        and file.stat().st_mtime < cutoff
-                        and str(file.relative_to(root)) not in retained
-                    ):
-                        file.unlink()
-    for directory in (root / "work").glob("job-*"):
-        if (
-            directory.is_dir()
-            and directory.stat().st_mtime < cutoff
-            and not WorkspaceReservation.objects.filter(
-                directory=str(directory.relative_to(root))
-            ).exists()
-        ):
-            shutil.rmtree(directory)
-    for file in (root / "pdf").glob("*/*.pdf"):
-        if (
-            file.stat().st_mtime < cutoff
-            and not Claim.objects.filter(pdf_key=str(file.relative_to(root))).exists()
-        ):
-            file.unlink()
-    for file in (root / "incoming").glob("*"):
-        if file.is_file() and file.stat().st_mtime < cutoff:
-            file.unlink()
+    recover_abandoned_workspaces()
+    sweep_orphans(timezone.now() - timedelta(hours=24), StoredOwners())

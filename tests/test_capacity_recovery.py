@@ -8,7 +8,6 @@ import time
 import uuid
 from datetime import timedelta
 from importlib import import_module
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -18,8 +17,7 @@ from django.utils import timezone
 
 from portal.jobs import run_one
 from portal.models import Claim, Job, Upload, WorkspaceReservation
-from portal.services.capacity import CapacityError
-from portal.services.documents import temporary_workspace
+from portal.services.capacity import CapacityError, temporary_workspace
 from portal.services.retention import orphan_cleanup
 from portal.services.storage import path_for
 
@@ -42,29 +40,20 @@ def test_existing_reservations_get_separate_output_allowances(prepared, settings
     assert render.output_bytes == settings.MAX_FINAL_PDF_BYTES
 
 
-def separate_filesystems(settings, monkeypatch, *, free_output=None):
+def separate_filesystems(settings, fake_disk):
     settings.MIN_FREE_STORAGE_BYTES = 1_000_000_000
-    free_output = free_output or (
+    fake_disk(
         settings.MIN_FREE_STORAGE_BYTES
         + settings.UPLOAD_TEMP_HEADROOM_BYTES
-        + 2 * settings.MAX_FINAL_PDF_BYTES
+        + 2 * settings.MAX_FINAL_PDF_BYTES,
+        workspace_free=700_000_000,
     )
-
-    def disk_usage(path):
-        free = 700_000_000 if Path(path).name == "work" else free_output
-        return SimpleNamespace(free=free)
-
-    monkeypatch.setattr("portal.services.capacity.shutil.disk_usage", disk_usage)
-    for module in ["capacity", "documents"]:
-        monkeypatch.setattr(
-            f"portal.services.{module}.workspace_uses_private_storage", lambda: False, raising=False
-        )
 
 
 def test_render_needs_only_final_output_capacity_on_persistent_storage(
-    accepted, settings, monkeypatch
+    accepted, settings, fake_disk
 ):
-    separate_filesystems(settings, monkeypatch)
+    separate_filesystems(settings, fake_disk)
     assert run_one()
     accepted.refresh_from_db()
     assert accepted.state == Claim.State.READY
@@ -73,23 +62,18 @@ def test_render_needs_only_final_output_capacity_on_persistent_storage(
 
 
 def test_shared_filesystem_still_reserves_workspace_above_storage_floor(
-    accepted, settings, monkeypatch
+    accepted, settings, fake_disk
 ):
     settings.MIN_FREE_STORAGE_BYTES = 1_000_000_000
-    monkeypatch.setattr(
-        "portal.services.capacity.shutil.disk_usage",
-        lambda path: SimpleNamespace(free=1_100_000_000),
-    )
+    fake_disk(1_100_000_000)
     with pytest.raises(CapacityError, match="storage_capacity"):
         with temporary_workspace(claim=accepted):
             pytest.fail("A shared filesystem must reserve workspace and final output")
     assert not WorkspaceReservation.objects.exists()
 
 
-def test_separate_tmpfs_still_rejects_overlapping_render_workspaces(
-    accepted, settings, monkeypatch
-):
-    separate_filesystems(settings, monkeypatch)
+def test_separate_tmpfs_still_rejects_overlapping_render_workspaces(accepted, settings, fake_disk):
+    separate_filesystems(settings, fake_disk)
     with temporary_workspace(claim=accepted):
         with pytest.raises(CapacityError, match="workspace_capacity"):
             with temporary_workspace(claim=accepted):
@@ -101,9 +85,9 @@ def test_separate_tmpfs_still_rejects_overlapping_render_workspaces(
 
 @pytest.mark.parametrize("age_seconds", [421, 25 * 3600])
 def test_recovery_preserves_live_execution_then_releases_crashed_owner(
-    accepted, settings, monkeypatch, age_seconds
+    accepted, settings, fake_disk, age_seconds
 ):
-    separate_filesystems(settings, monkeypatch)
+    separate_filesystems(settings, fake_disk)
     key = f"work/job-{uuid.uuid4()}"
     directory = path_for(key)
     directory.mkdir(parents=True, mode=0o700)
@@ -149,10 +133,8 @@ def test_recovery_preserves_live_execution_then_releases_crashed_owner(
         process.communicate(timeout=5)
 
 
-def test_restart_recovers_missing_tmpfs_workspace_before_next_render(
-    accepted, settings, monkeypatch
-):
-    separate_filesystems(settings, monkeypatch)
+def test_restart_recovers_missing_tmpfs_workspace_before_next_render(accepted, settings, fake_disk):
+    separate_filesystems(settings, fake_disk)
     reservation = WorkspaceReservation.objects.create(
         directory=f"work/job-{uuid.uuid4()}",
         size=settings.MAX_RENDER_WORKSPACE_BYTES,
@@ -213,8 +195,9 @@ def sleeping_parser(command, **options):
  Path(sys.argv[3]).write_text(json.dumps({'pid': process.pid}))
  return process
 documents.subprocess.Popen = sleeping_parser
-with documents.workspace_lock(Path(sys.argv[2])):
- documents.run_document_process('validate', sys.argv[1], sys.argv[2])
+from portal.services.capacity import workspace_lock
+with workspace_lock(Path(sys.argv[2])):
+ documents.inspect_upload(sys.argv[1], sys.argv[2])
 """
     supervisor = subprocess.Popen(
         [sys.executable, "-c", code, str(source), str(directory), str(coordinator)],

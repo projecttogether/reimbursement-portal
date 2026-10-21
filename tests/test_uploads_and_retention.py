@@ -1,4 +1,5 @@
 import io
+import socket
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -9,7 +10,6 @@ from PIL import Image
 
 from portal.jobs import run_one
 from portal.models import Job, Upload
-from portal.services.documents import ProcessingError
 from portal.services.retention import cleanup, purge_claim
 from portal.services.storage import path_for
 from tests.conftest import camera_jpeg_bytes, image_bytes
@@ -68,7 +68,11 @@ def test_camera_jpeg_with_auxiliary_picture_is_normalized(prepared, kind):
         assert green > red + 50  # Primary green picture, never the auxiliary red picture.
 
 
-def test_scanner_failure_keeps_file_pending(prepared, uploaded_file):
+def test_scanner_failure_keeps_file_pending(prepared, uploaded_file, settings):
+    settings.UPLOAD_SCANNER, settings.CLAMAV_HOST = "clamav", "127.0.0.1"
+    with socket.socket() as unused:
+        unused.bind(("127.0.0.1", 0))
+        settings.CLAMAV_PORT = unused.getsockname()[1]
     response = prepared["client"].post(
         "/forms/test/uploads/",
         {
@@ -79,8 +83,7 @@ def test_scanner_failure_keeps_file_pending(prepared, uploaded_file):
             "file": uploaded_file,
         },
     )
-    with patch("portal.jobs.scan_file", side_effect=ProcessingError("scanner_unavailable")):
-        run_one()
+    run_one()
     upload = Upload.objects.get(pk=response.json()["id"])
     assert upload.state == "pending"
     assert upload.error_code == "scanner_unavailable"
@@ -137,9 +140,13 @@ def test_purge_removes_all_sensitive_fields_and_files(accepted):
 
 
 def test_interrupted_purge_resumes_from_manifest(accepted):
-    with patch("portal.services.retention.remove_keys", side_effect=OSError("synthetic failure")):
+    directory = path_for(accepted.uploads.first().source_key).parent
+    directory.chmod(0o500)
+    try:
         with pytest.raises(OSError):
             purge_claim(accepted.pk)
+    finally:
+        directory.chmod(0o700)
     accepted.refresh_from_db()
     assert accepted.state == "purging"
     assert accepted.uploads.count() == 2
@@ -216,3 +223,34 @@ def test_public_health_requires_deployment_token(client, settings):
         client.get("/-/healthz", headers={"X-Health-Token": "synthetic-health-token"}).status_code
         == 200
     )
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [("closed", "geschlossen"), ("revised", "aktualisiert")],
+)
+def test_uploads_and_submission_share_the_editable_draft_rule(
+    prepared, uploaded_file, change, message
+):
+    event = prepared["event"]
+    if change == "closed":
+        event.active = False
+    else:
+        event.config_version += 1
+    event.save()
+    upload = prepared["client"].post(
+        "/forms/test/uploads/",
+        {
+            "draft_id": str(prepared["draft"].id),
+            "token": prepared["data"]["token"],
+            "kind": "receipt",
+            "expense_id": prepared["data"]["expenses"][0]["id"],
+            "file": uploaded_file,
+        },
+    )
+    submit = prepared["client"].post(
+        "/forms/test/submit/", data=prepared["data"], content_type="application/json"
+    )
+    for response in [upload, submit]:
+        assert response.status_code == 409
+        assert message in response.json()["error"]

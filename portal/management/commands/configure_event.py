@@ -5,8 +5,9 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from portal.forms import CURRENCY_PRECISION
+from portal.intake import CURRENCY_PRECISION
 from portal.models import Event
+from portal.services.delivery import recipient_approved
 
 
 class Command(BaseCommand):
@@ -58,7 +59,7 @@ class Command(BaseCommand):
         event = event or Event(slug=data["slug"])
         for key, value in data.items():
             setattr(event, key, value)
-        if event.recipient.lower() not in settings.APPROVED_DELIVERY_RECIPIENTS:
+        if not recipient_approved(event.recipient):
             raise CommandError("Event recipient must be in APPROVED_DELIVERY_RECIPIENTS.")
         if not settings.DEBUG and event.privacy_version == "demo-only":
             raise CommandError("Production requires an approved privacy notice.")

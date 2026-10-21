@@ -1,10 +1,11 @@
 import getpass
-import uuid
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from portal.models import Claim, Delivery, Job, Operation
+from portal.job_kinds import RENDER
+from portal.models import Claim, Operation
+from portal.services import delivery, queue
 
 
 class Command(BaseCommand):
@@ -19,27 +20,18 @@ class Command(BaseCommand):
     @transaction.atomic
     def handle(self, *args, **options):
         claim = Claim.objects.select_for_update().get(pk=options["reference"])
-        if (
-            Job.objects.filter(claim=claim, state__in=["pending", "running"]).exists()
-            or Job.objects.filter(delivery__claim=claim, state__in=["pending", "running"]).exists()
-        ):
+        if queue.claim_has_active_job(claim):
             raise CommandError("This claim already has an active job.")
-        if claim.state == Claim.State.FAILED and not claim.pdf_key:
-            claim.state, claim.error_code = Claim.State.RECEIVED, ""
-            claim.save()
-            Job.objects.create(key=f"render:{claim.pk}:{uuid.uuid4()}", kind="render", claim=claim)
-        elif claim.state == Claim.State.READY:
-            delivery = Delivery.objects.select_for_update().get(claim=claim)
-            if delivery.state != "failed" and not options["acknowledge_duplicate_risk"]:
+        if claim.state == Claim.State.READY:
+            try:
+                delivery.retry(
+                    claim, acknowledge_duplicate_risk=options["acknowledge_duplicate_risk"]
+                )
+            except delivery.DuplicateRisk as exc:
                 raise CommandError(
                     "Check provider activity first. Use --acknowledge-duplicate-risk for an intentional resend."
-                )
-            delivery.state, delivery.error_code = "pending", ""
-            delivery.save()
-            Job.objects.create(
-                key=f"send:{delivery.pk}:{uuid.uuid4()}", kind="send", delivery=delivery
-            )
-        else:
+                ) from exc
+        elif not RENDER.requeue(claim):
             raise CommandError("This claim cannot be retried in its current state.")
         Operation.objects.create(
             claim=claim, action="retry", actor=options["actor"], reason=options["reason"]

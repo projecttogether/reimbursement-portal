@@ -14,7 +14,12 @@ from PIL import Image, ImageChops, ImageOps
 from pypdf import PdfReader, PdfWriter, Transformation
 from pypdf.generic import DictionaryObject, IndirectObject
 
-from portal.constants import MAX_IMAGE_PIXELS, MAX_NORMALIZED_FILE_BYTES, MAX_RECEIPT_DIMENSION
+from portal.constants import (
+    MAX_IMAGE_PIXELS,
+    MAX_NORMALIZED_FILE_BYTES,
+    MAX_PDF_PAGES,
+    MAX_RECEIPT_DIMENSION,
+)
 
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -113,7 +118,7 @@ def validate_file(source, destination, kind):
         if reader.is_encrypted:
             raise DocumentError("encrypted_pdf")
         count = len(reader.pages)
-        if not 1 <= count <= 30:
+        if not 1 <= count <= MAX_PDF_PAGES:
             raise DocumentError("pdf_pages")
         check_pdf_objects(reader)
         with pdfium.PdfDocument(source) as document:

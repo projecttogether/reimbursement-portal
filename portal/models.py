@@ -5,6 +5,7 @@ from django.db import models
 from django.utils import timezone
 
 from portal.constants import DECLARATION, DECLARATION_VERSION
+from portal.intake import EXPENSE_FIELD_LENGTHS
 
 
 def draft_expiry():
@@ -139,9 +140,9 @@ class Expense(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     claim = models.ForeignKey(Claim, on_delete=models.CASCADE, related_name="expenses")
     position = models.PositiveSmallIntegerField()
-    merchant = models.CharField(max_length=200)
-    purpose = models.CharField(max_length=500)
-    receipt_reference = models.CharField(max_length=100)
+    merchant = models.CharField(max_length=EXPENSE_FIELD_LENGTHS["merchant"])
+    purpose = models.CharField(max_length=EXPENSE_FIELD_LENGTHS["purpose"])
+    receipt_reference = models.CharField(max_length=EXPENSE_FIELD_LENGTHS["receipt_reference"])
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     currency = models.CharField(max_length=3)
 
