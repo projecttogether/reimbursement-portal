@@ -17,7 +17,12 @@
   let dirty = false;
   let saving = false;
   let publication = null;
+  let failedPublication = null;
   let observed = serialize();
+
+  function publicationError(action) {
+    return action === "publish" ? "Veröffentlichen fehlgeschlagen." : "Unveröffentlichen fehlgeschlagen.";
+  }
 
   function serialize() {
     return new URLSearchParams(new FormData(form)).toString();
@@ -107,10 +112,12 @@
       const result = await response.json();
       if (!response.ok) {
         showErrors(result);
-        throw new Error(action === "publish" ? "Veröffentlichen fehlgeschlagen." :
-          "Änderungen wurden nicht gespeichert.");
+        throw new Error(action ? publicationError(action) : "Änderungen wurden nicht gespeichert.");
       }
       clearErrors();
+      if (action ||
+        (failedPublication === "publish" && result.status === "published") ||
+        (failedPublication === "unpublish" && result.status === "draft")) failedPublication = null;
       creating = false;
       form.action = result.url;
       window.history.replaceState(null, "", result.url);
@@ -133,11 +140,13 @@
         link.textContent = new URL(result.link, window.location.origin).href;
       }
       dirty = revision !== startedAt;
-      status.textContent = dirty ? "Ungespeicherte Änderungen …" : "Alle Änderungen gespeichert.";
+      status.textContent = failedPublication ? publicationError(failedPublication) :
+        dirty ? "Ungespeicherte Änderungen …" : "Alle Änderungen gespeichert.";
+      retry.hidden = !failedPublication;
     } catch (error) {
       dirty = true;
-      status.textContent = error.message === "Veröffentlichen fehlgeschlagen." ||
-        error.message === "Änderungen wurden nicht gespeichert." ? error.message :
+      if (action) failedPublication = action;
+      status.textContent = failedPublication ? publicationError(failedPublication) :
         "Speichern fehlgeschlagen. Deine Änderungen sind noch nicht gespeichert.";
       if (errors.hidden) showErrors({ error: error.name === "TypeError" || error.name === "TimeoutError" ?
         "Keine Verbindung. Bitte prüfe deine Internetverbindung und versuche es erneut." : error.message });
@@ -160,13 +169,22 @@
   });
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (event.submitter === toggle) {
-      publication = toggle.value;
-      toggle.disabled = true;
-    } else dirty = true;
+    dirty = true;
     save();
   });
-  retry.addEventListener("click", () => save());
+  toggle.addEventListener("click", () => {
+    failedPublication = null;
+    publication = toggle.value;
+    toggle.disabled = true;
+    save();
+  });
+  retry.addEventListener("click", () => {
+    if (failedPublication) {
+      publication = failedPublication;
+      toggle.disabled = true;
+    }
+    save();
+  });
   document.addEventListener("keydown", (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
@@ -177,7 +195,7 @@
     if (document.visibilityState === "hidden") save();
   });
   window.addEventListener("beforeunload", (event) => {
-    if (dirty || saving || publication) {
+    if (dirty || saving || publication || failedPublication) {
       event.preventDefault();
       event.returnValue = "";
     }

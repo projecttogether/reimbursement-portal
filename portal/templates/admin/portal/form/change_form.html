@@ -5,9 +5,9 @@
   <div class="flex flex-wrap items-center gap-3">
     {% if has_change_permission or add %}
     {% if original.status == 'published' %}
-    {% component "button" type="submit" form="form_form" name="_publication" value="unpublish" data_publication_toggle=True %}Unveröffentlichen{% endcomponent %}
+    {% component "button" type="button" form="form_form" value="unpublish" data_publication_toggle=True %}Unveröffentlichen{% endcomponent %}
     {% else %}
-    {% component "button" type="submit" form="form_form" name="_publication" value="publish" data_publication_toggle=True %}Veröffentlichen{% endcomponent %}
+    {% component "button" type="button" form="form_form" value="publish" data_publication_toggle=True %}Veröffentlichen{% endcomponent %}
     {% endif %}
     {% endif %}
     <span data-form-status data-status="{{ original.status|default:'draft' }}">
