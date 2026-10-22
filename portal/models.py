@@ -6,7 +6,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from portal.constants import DECLARATION, DECLARATION_VERSION
@@ -209,6 +209,14 @@ class Form(models.Model):
     opens_at = models.DateTimeField("Geöffnet ab", null=True, blank=True)
     closes_at = models.DateTimeField("Geöffnet bis", null=True, blank=True)
     active = models.BooleanField("Aktiv", default=False)
+    primary = models.BooleanField(
+        "Startseite",
+        default=False,
+        help_text=(
+            "Die Startseite leitet auf dieses Formular weiter, solange es geöffnet ist. "
+            "Nur ein Formular kann die Startseite sein."
+        ),
+    )
     owners = models.ManyToManyField(
         settings.AUTH_USER_MODEL,
         blank=True,
@@ -223,6 +231,11 @@ class Form(models.Model):
         ordering = ["-created_at"]
         verbose_name = "Formular"
         verbose_name_plural = "Formulare"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["primary"], condition=models.Q(primary=True), name="form_primary_unique"
+            )
+        ]
 
     def __str__(self):
         return self.name
@@ -254,7 +267,11 @@ class Form(models.Model):
         # Every saved change makes open drafts reload, so nobody submits against old values.
         if self.pk and not kwargs.get("update_fields"):
             self.config_version += 1
-        super().save(*args, **kwargs)
+        with transaction.atomic():
+            if self.primary:
+                # Only one form is the start page; the previous one just stops being it.
+                Form.objects.filter(primary=True).exclude(pk=self.pk).update(primary=False)
+            super().save(*args, **kwargs)
 
     def purpose_choices(self):
         return [line.strip() for line in self.purpose_options.splitlines() if line.strip()]

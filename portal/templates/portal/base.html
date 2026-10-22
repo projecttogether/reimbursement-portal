@@ -18,13 +18,13 @@
       <img src="{% static 'portal/brand/projecttogether-logo.png' %}" alt="" width="32" height="32" class="size-8 rounded-md">
       <span class="grid leading-tight"><span class="text-sm font-semibold">ProjectTogether</span><span class="text-xs text-muted-foreground">Erstattungsportal</span></span>
     </a>
-    <span class="hidden text-sm text-muted-foreground sm:inline">Auslagen einreichen</span>
   </div>
 </header>
 <main id="main" class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 px-4 py-8 sm:px-6 sm:py-12">{% block content %}{% endblock %}</main>
 <footer class="border-t bg-background">
   <div class="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-6 text-sm text-muted-foreground sm:px-6">
     <span>ProjectTogether gGmbH</span>
+    <a class="hover:text-foreground hover:underline" href="https://projecttogether.org/impressum/">Impressum</a>
     <a class="hover:text-foreground hover:underline" href="{% url 'privacy' %}">Datenschutz</a>
     {% if form.support_email %}<span>Fragen zur Erstattung? <a class="font-medium text-foreground hover:underline" href="mailto:{{ form.support_email }}">{{ form.support_email }}</a></span>{% endif %}
   </div>

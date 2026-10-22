@@ -276,12 +276,13 @@ class FormAdmin(admin.ModelAdmin):
         "name",
         "template",
         "active",
+        "primary",
         "values_complete",
         "open_now",
         "closes_at",
         "link",
     ]
-    list_filter = ["active", "template"]
+    list_filter = ["active", "primary", "template"]
     search_fields = ["name", "slug"]
     prepopulated_fields = {"slug": ["name"]}
     filter_horizontal = ["owners"]
@@ -345,7 +346,7 @@ class FormAdmin(admin.ModelAdmin):
 
     def get_fieldsets(self, request, obj=None):
         template = self._template(request, obj)
-        main = ["template_name", "name", "slug", "active", "opens_at", "closes_at"]
+        main = ["template_name", "name", "slug", "active", "primary", "opens_at", "closes_at"]
         if obj is not None:
             main.append("link")
         fieldsets = [(None, {"fields": main})]
@@ -371,7 +372,10 @@ class FormAdmin(admin.ModelAdmin):
         return fieldsets
 
     def get_readonly_fields(self, request, obj=None):
-        return ["template_name", "link"]
+        # The start page is app-wide, so only template admins choose it.
+        if is_template_admin(request.user):
+            return ["template_name", "link"]
+        return ["template_name", "link", "primary"]
 
     def get_prepopulated_fields(self, request, obj=None):
         return self.prepopulated_fields if obj is None else {}

@@ -8,7 +8,7 @@ from django.core.exceptions import ValidationError
 
 from portal import roles
 from portal.intake import MAX_CLAIM_TOTAL
-from portal.models import Claim, Draft, FormTemplate, PrivacyNotice, TemplateField
+from portal.models import Claim, Draft, Form, FormTemplate, PrivacyNotice, TemplateField
 
 pytestmark = pytest.mark.django_db
 
@@ -33,6 +33,32 @@ def test_landing_page_does_not_list_forms(client, form):
     assert response.status_code == 200
     assert form.name.encode() not in response.content
     assert client.get("/forms/test/").status_code == 404
+
+
+def test_landing_page_redirects_to_the_open_primary_form(client, form, template):
+    form.primary = True
+    form.save()
+    assert client.get("/").headers["Location"] == "/f/test/"
+    form.active = False
+    form.save()
+    assert client.get("/").status_code == 200
+    other = Form.objects.create(
+        template=template,
+        slug="allgemein",
+        name="Allgemein",
+        field_values=form.field_values,
+        recipient=form.recipient,
+        support_email=form.support_email,
+        active=True,
+        primary=True,
+    )
+    form.refresh_from_db()
+    assert not form.primary and form.config_version == 3
+    assert client.get("/").headers["Location"] == f"/f/{other.slug}/"
+
+
+def test_footer_links_the_impressum(client):
+    assert b"https://projecttogether.org/impressum/" in client.get("/").content
 
 
 def test_submitted_form_link_starts_a_new_claim(client, accepted):
