@@ -215,6 +215,37 @@ def test_editors_cannot_change_templates_or_the_privacy_notice(client, editor, t
     assert client.get("/admin/portal/formtemplate/add/").status_code == 403
 
 
+def test_only_template_admins_choose_the_start_page_form(client, editor, form):
+    data = {
+        "name": form.name,
+        "slug": form.slug,
+        "value_kst": "TEST-KST",
+        "recipient": form.recipient,
+        "support_email": form.support_email,
+        "active": "on",
+        "primary": "on",
+    }
+    current = Form.objects.create(
+        template=form.template,
+        slug="allgemein",
+        name="Allgemein",
+        recipient=form.recipient,
+        support_email=form.support_email,
+        primary=True,
+    )
+    url = f"/admin/portal/form/{form.pk}/change/"
+    form.owners.add(editor)
+    client.force_login(editor)
+    assert client.post(url, data).status_code == 302
+    form.refresh_from_db()
+    assert not form.primary
+    client.force_login(user_with(roles.TEMPLATE_ADMIN, "admin"))
+    assert client.post(url, data).status_code == 302
+    form.refresh_from_db()
+    current.refresh_from_db()
+    assert form.primary and not current.primary
+
+
 def test_admin_adds_a_new_privacy_notice_version(admin_client, privacy_notice):
     page = admin_client.get("/admin/portal/privacynotice/add/").content.decode()
     assert privacy_notice.text.splitlines()[0][:20] in page

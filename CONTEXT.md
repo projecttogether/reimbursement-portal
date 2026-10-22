@@ -15,6 +15,10 @@ template by its owners. It holds the internal values, purpose options, instructi
 recipient, contact, opening times and its configuration revision. Saving the form,
 its template or a new privacy notice increments the revision.
 
+**Start page form**: the one form marked *Startseite* (`Form.primary`), chosen by
+template admins. `/` redirects to it while it is open, and otherwise shows a short
+landing text.
+
 **Privacy notice**: the one app-wide, versioned text. A change is a new version;
 claims record the version they acknowledged.
 

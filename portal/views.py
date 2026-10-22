@@ -5,7 +5,7 @@ from functools import wraps
 from django.conf import settings
 from django.db import connection
 from django.http import Http404, JsonResponse
-from django.shortcuts import get_object_or_404, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
@@ -46,6 +46,9 @@ def can_preview(user, form):
 
 @require_GET
 def index(request):
+    primary = Form.objects.select_related("template").filter(primary=True).first()
+    if primary and primary.is_open():
+        return redirect("form_page", form_slug=primary.slug)
     return render(request, "portal/index.html")
 
 
