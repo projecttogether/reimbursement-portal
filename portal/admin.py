@@ -6,6 +6,7 @@ from django import forms
 from django.conf import settings
 from django.contrib import admin, messages
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.db import IntegrityError
 from django.http import Http404, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.response import TemplateResponse
@@ -13,6 +14,7 @@ from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.http import url_has_allowed_host_and_scheme, urlencode
+from django.utils.text import slugify
 from mozilla_django_oidc.views import OIDCLogoutView
 
 from portal import admin_navigation
@@ -216,6 +218,7 @@ class FormAdminForm(forms.ModelForm):
     """Adds one field per template field; values are stored in `field_values`."""
 
     portal_template = None
+    portal_status = Form.Status.DRAFT
 
     class Meta:
         model = Form
@@ -225,6 +228,13 @@ class FormAdminForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         if not self.instance.template_id:
             self.instance.template = self.portal_template
+        self.instance.status = self.portal_status
+        if self.portal_status == Form.Status.DRAFT:
+            for name, field in self.fields.items():
+                if name in {"name", "slug", "recipient", "support_email"} or name.startswith(
+                    "value_"
+                ):
+                    field.required = False
         for field in self.portal_template.fields.all():
             self.initial.setdefault(
                 f"value_{field.key}", self.instance.field_values.get(field.key, "")
@@ -232,16 +242,25 @@ class FormAdminForm(forms.ModelForm):
         if "recipient" in self.fields:
             choices = [(address, address) for address in settings.APPROVED_DELIVERY_RECIPIENTS]
             self.fields["recipient"] = forms.ChoiceField(
-                label=self.fields["recipient"].label, choices=choices
+                label=self.fields["recipient"].label,
+                choices=[("", "—"), *choices],
+                required=self.portal_status == Form.Status.PUBLISHED,
             )
-        if "owners" in self.fields:
-            self.fields["owners"].queryset = self.fields["owners"].queryset.filter(is_staff=True)
 
     def clean(self):
         data = super().clean()
+        if self.portal_status == Form.Status.DRAFT:
+            if "name" not in self.errors and not data.get("name"):
+                data["name"] = "Neues Formular"
+            if "slug" not in self.errors and not data.get("slug"):
+                stem = slugify(data.get("name", ""))[:30] or "formular"
+                data["slug"] = self.instance.slug or f"{stem}-{uuid.uuid4().hex[:12]}"
         values = {}
         for field in self.portal_template.fields.all():
             name = f"value_{field.key}"
+            if self.portal_status == Form.Status.DRAFT and not data.get(name):
+                values[field.key] = ""
+                continue
             try:
                 values[field.key] = field.validate(data.get(name, ""))
             except ValidationError as exc:
@@ -268,6 +287,7 @@ def value_field(field):
 
 @admin.register(Form, site=site)
 class FormAdmin(admin.ModelAdmin):
+    change_form_template = "admin/portal/form/change_form.html"
     list_description = "Über den Link eines Formulars reichen Teilnehmende ihre Auslagen ein."
     add_label = "Formular anlegen"
     search_placeholder = "Name oder Kurzname …"
@@ -275,17 +295,17 @@ class FormAdmin(admin.ModelAdmin):
     list_display = [
         "name",
         "template",
-        "active",
+        "publication_status",
         "primary",
         "values_complete",
         "open_now",
         "closes_at",
         "link",
     ]
-    list_filter = ["active", "primary", "template"]
+    list_filter = ["status", "primary", "template"]
     search_fields = ["name", "slug"]
+    exclude = ["status", "creation_key"]
     prepopulated_fields = {"slug": ["name"]}
-    filter_horizontal = ["owners"]
 
     def has_module_permission(self, request):
         return is_form_editor(request.user)
@@ -341,12 +361,20 @@ class FormAdmin(admin.ModelAdmin):
         template = self._template(request, obj)
         attributes = {f"value_{field.key}": value_field(field) for field in template.fields.all()}
         attributes["portal_template"] = template
+        status = obj.status if obj else Form.Status.DRAFT
+        if request.method == "POST":
+            action = request.POST.get("_publication")
+            if action == "publish":
+                status = Form.Status.PUBLISHED
+            elif action == "unpublish":
+                status = Form.Status.DRAFT
+        attributes["portal_status"] = status
         kwargs["form"] = type("FormAdminForm", (FormAdminForm,), attributes)
         return super().get_form(request, obj, change, **kwargs)
 
     def get_fieldsets(self, request, obj=None):
         template = self._template(request, obj)
-        main = ["template_name", "name", "slug", "active", "primary", "opens_at", "closes_at"]
+        main = ["template_name", "name", "slug", "primary", "opens_at", "closes_at"]
         if obj is not None:
             main.append("link")
         fieldsets = [(None, {"fields": main})]
@@ -367,7 +395,6 @@ class FormAdmin(admin.ModelAdmin):
         fieldsets += [
             ("Für Teilnehmende", {"fields": participant}),
             ("Versand und Kontakt", {"fields": ["recipient", "support_email"]}),
-            ("Verantwortliche", {"fields": ["owners"]}),
         ]
         return fieldsets
 
@@ -381,7 +408,19 @@ class FormAdmin(admin.ModelAdmin):
         return self.prepopulated_fields if obj is None else {}
 
     def get_changeform_initial_data(self, request):
-        return {"support_email": request.user.email}
+        recipients = settings.APPROVED_DELIVERY_RECIPIENTS
+        return {
+            "support_email": request.user.email,
+            "recipient": recipients[0] if len(recipients) == 1 else "",
+        }
+
+    @admin.display(description="Status", ordering="status")
+    def publication_status(self, obj):
+        return render_component(
+            "badge",
+            obj.get_status_display(),
+            variant="success" if obj.status == Form.Status.PUBLISHED else "secondary",
+        )
 
     @admin.display(description="Vorlage")
     def template_name(self, obj):
@@ -412,14 +451,91 @@ class FormAdmin(admin.ModelAdmin):
 
     def changeform_view(self, request, object_id=None, form_url="", extra_context=None):
         self._request = request
+        creation_key = None
+        if self._autosave(request) and object_id is None and request.POST.get("_creation_key"):
+            try:
+                creation_key = uuid.UUID(request.POST["_creation_key"])
+            except ValueError:
+                return JsonResponse(
+                    {"error": "Ungültige Anfrage. Bitte lade die Seite neu."}, status=400
+                )
+            existing = self.get_queryset(request).filter(creation_key=creation_key).first()
+            if existing:
+                object_id = str(existing.pk)
         form = self.get_object(request, object_id) if object_id else None
-        if request.method == "GET" and form and form.internal_value_errors():
+        if (
+            request.method == "GET"
+            and form
+            and form.status == Form.Status.PUBLISHED
+            and form.internal_value_errors()
+        ):
             messages.warning(
                 request,
                 "Die Vorlage wurde geändert. Das Formular bleibt geschlossen, bis diese "
                 f"internen Werte passen: {', '.join(form.internal_value_errors())}.",
             )
-        return super().changeform_view(request, object_id, form_url, extra_context)
+        if request.method == "POST" and request.POST.get("_publication", "") not in {
+            "",
+            "publish",
+            "unpublish",
+        }:
+            return JsonResponse({"error": "Ungültiger Statuswechsel."}, status=400)
+        try:
+            response = super().changeform_view(request, object_id, form_url, extra_context)
+        except IntegrityError:
+            # A timed-out first save may still finish while its retry is being processed.
+            existing = (
+                self.get_queryset(request).filter(creation_key=creation_key).first()
+                if creation_key and object_id is None
+                else None
+            )
+            if existing is None:
+                raise
+            return self.changeform_view(request, str(existing.pk), form_url, extra_context)
+        if self._autosave(request) and isinstance(response, TemplateResponse):
+            context = response.context_data
+            if context.get("adminform"):
+                return JsonResponse(
+                    {"errors": context["adminform"].form.errors.get_json_data()}, status=400
+                )
+        if self._autosave(request) and response.status_code == 302:
+            # A deleted form must never turn an autosave into a second new form.
+            return JsonResponse(
+                {"error": "Das Formular ist nicht mehr verfügbar. Bitte lade die Seite neu."},
+                status=404,
+            )
+        return response
+
+    @staticmethod
+    def _autosave(request):
+        return request.method == "POST" and request.POST.get("_autosave") == "1"
+
+    def _saved_response(self, obj):
+        return JsonResponse(
+            {
+                "url": reverse("admin:portal_form_change", args=[obj.pk]),
+                "name": obj.name,
+                "slug": obj.slug,
+                "status": obj.status,
+                "status_label": obj.get_status_display(),
+                "link": reverse("form_page", kwargs={"form_slug": obj.slug}),
+            }
+        )
+
+    def response_add(self, request, obj, post_url_continue=None):
+        if self._autosave(request):
+            return self._saved_response(obj)
+        return super().response_add(request, obj, post_url_continue)
+
+    def response_change(self, request, obj):
+        if self._autosave(request):
+            return self._saved_response(obj)
+        return super().response_change(request, obj)
+
+    def save_model(self, request, obj, form, change):
+        if not change and self._autosave(request) and request.POST.get("_creation_key"):
+            obj.creation_key = uuid.UUID(request.POST["_creation_key"])
+        super().save_model(request, obj, form, change)
 
     def save_related(self, request, form, formsets, change):
         super().save_related(request, form, formsets, change)

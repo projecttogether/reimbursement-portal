@@ -45,7 +45,7 @@ def html_attributes(values):
     return format_html_join("", ' {}="{}"', pairs)
 
 
-def render_component(name, slot, **options):
+def render_component(name, slot, /, **options):
     """A component outside templates, e.g. `render_component("badge", "Neu", variant="success")`."""
     if name not in COMPONENTS:
         raise template.TemplateSyntaxError(f"Unknown component {name!r}.")

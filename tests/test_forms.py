@@ -39,7 +39,7 @@ def test_landing_page_redirects_to_the_open_primary_form(client, form, template)
     form.primary = True
     form.save()
     assert client.get("/").headers["Location"] == "/f/test/"
-    form.active = False
+    form.status = Form.Status.DRAFT
     form.save()
     assert client.get("/").status_code == 200
     other = Form.objects.create(
@@ -49,7 +49,7 @@ def test_landing_page_redirects_to_the_open_primary_form(client, form, template)
         field_values=form.field_values,
         recipient=form.recipient,
         support_email=form.support_email,
-        active=True,
+        status=Form.Status.PUBLISHED,
         primary=True,
     )
     form.refresh_from_db()
@@ -68,8 +68,8 @@ def test_submitted_form_link_starts_a_new_claim(client, accepted):
     assert Draft.objects.exclude(pk=first.pk).filter(claim__isnull=True).count() == 1
 
 
-def test_inactive_form_is_closed_but_owners_can_preview(client, form):
-    form.active = False
+def test_draft_form_is_closed_but_owners_can_preview(client, form):
+    form.status = Form.Status.DRAFT
     form.save()
     assert client.get("/f/test/").status_code == 403
     user = get_user_model().objects.create_user("editor-subject", email="editor@example.invalid")

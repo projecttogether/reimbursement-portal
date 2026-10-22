@@ -43,7 +43,7 @@ def test_acceptance_snapshots_form_and_uses_exact_decimal_totals(prepared):
 
 def test_repeated_post_returns_one_claim_even_after_form_closes(prepared):
     first = post(prepared)
-    Form.objects.filter(pk=prepared["form"].pk).update(active=False, config_version=2)
+    Form.objects.filter(pk=prepared["form"].pk).update(status=Form.Status.DRAFT, config_version=2)
     second = post(prepared)
     assert first.json() == second.json()
     assert Claim.objects.count() == 1
