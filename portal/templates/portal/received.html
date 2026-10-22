@@ -1,3 +1,20 @@
-{% extends 'portal/base.html' %}{% load static %}{% block title %}Antrag eingereicht{% endblock %}{% block content %}
-<section class="receipt panel"><div class="success-mark" aria-hidden="true">✓</div><p class="eyebrow">{{ form.name }}</p><h1>Danke. Dein Antrag<br>wurde eingereicht.</h1><p>Wir erstellen jetzt die vollständige PDF und senden sie an unser Finance-Team. Die Eingangsbestätigung ist noch keine Zusage zur Erstattung.</p><div class="reference-box"><span>Deine Referenz</span><strong id="claim-reference">{{ claim.reference }}</strong><small>Bitte notiere die Referenz für Rückfragen.</small></div><p id="processing-status" data-status="{{ status }}" data-final="{{ final|yesno:'true,false' }}" aria-live="polite">Dein Antrag wird verarbeitet.</p><p>Finance übernimmt die Prüfung und meldet sich bei Rückfragen.</p></section>
+{% extends 'portal/base.html' %}{% load static ui %}{% block title %}Antrag eingereicht{% endblock %}{% block content %}
+<ol class="steps flex items-center gap-2 sm:gap-3" aria-label="Fortschritt">
+  <li><span>1</span> Angaben &amp; Belege</li>
+  <li><span>2</span> Prüfen &amp; unterschreiben</li>
+  <li class="active" aria-current="step"><span>3</span> Eingereicht</li>
+</ol>
+<section class="flex flex-col items-center gap-5 rounded-xl border bg-card px-6 py-10 text-center text-card-foreground shadow-sm sm:px-10">
+  <span class="flex size-14 items-center justify-center rounded-full bg-success-background text-success" aria-hidden="true">{% icon "circle-check" class="size-7" %}</span>
+  {% component "badge" variant="outline" %}{{ form.name }}{% endcomponent %}
+  <h1 class="text-2xl font-semibold tracking-tight text-balance sm:text-3xl">Danke. Dein Antrag wurde eingereicht.</h1>
+  <p class="max-w-lg text-muted-foreground">Wir erstellen jetzt die vollständige PDF und senden sie an unser Finance-Team. Die Eingangsbestätigung ist noch keine Zusage zur Erstattung.</p>
+  <div class="flex w-full max-w-md flex-col gap-1 rounded-lg border bg-muted/50 p-4">
+    <span class="text-xs font-medium tracking-wide text-muted-foreground uppercase">Deine Referenz</span>
+    <strong id="claim-reference" class="font-mono text-sm break-all select-all">{{ claim.reference }}</strong>
+    <small class="text-xs text-muted-foreground">Bitte notiere die Referenz für Rückfragen.</small>
+  </div>
+  <p id="processing-status" class="flex items-center gap-2 text-sm font-medium" data-status="{{ status }}" data-final="{{ final|yesno:'true,false' }}" aria-live="polite">Dein Antrag wird verarbeitet.</p>
+  <p class="text-sm text-muted-foreground">Finance übernimmt die Prüfung und meldet sich bei Rückfragen.</p>
+</section>
 {% endblock %}{% block scripts %}<script src="{% static 'portal/received.js' %}" defer></script>{% endblock %}

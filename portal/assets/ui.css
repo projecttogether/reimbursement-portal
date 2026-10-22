@@ -6,6 +6,7 @@
  */
 @import "tailwindcss" source(none);
 @import "./admin.css";
+@import "./portal.css";
 @source "../templates";
 @source "../static/portal/*.js";
 @source "../**/*.py";
