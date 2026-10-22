@@ -65,6 +65,8 @@ OIDC_ENABLED = bool(OIDC_RP_CLIENT_ID and OIDC_RP_CLIENT_SECRET)
 KEYCLOAK_BASE_URL = os.getenv("KEYCLOAK_BASE_URL", "https://auth.projecttogether.net").rstrip("/")
 KEYCLOAK_REALM = os.getenv("KEYCLOAK_REALM", "projecttogether")
 KEYCLOAK_REALM_URL = f"{KEYCLOAK_BASE_URL}/realms/{KEYCLOAK_REALM}"
+# Where admins manage their PT Login account (profile menu in the admin sidebar).
+KEYCLOAK_ACCOUNT_URL = f"{KEYCLOAK_REALM_URL}/account/"
 KEYCLOAK_ADMIN_GROUP = os.getenv(
     "KEYCLOAK_ADMIN_GROUP", "/projecttogether/tools/reimbursement-portal-admins"
 )

@@ -261,3 +261,52 @@ def test_claim_search_finds_a_full_reference(admin_client, accepted):
     assert "Alex Beispiel" in page
     page = admin_client.get(f"/admin/portal/claim/?q={accepted.reference[:8]}").content.decode()
     assert "Alex Beispiel" not in page
+
+
+def test_admin_home_opens_the_claims(admin_client):
+    response = admin_client.get("/admin/")
+    assert response.status_code == 302 and response.url == "/admin/portal/claim/"
+    assert admin_client.get("/admin/portal/").url == "/admin/portal/claim/"
+
+
+def test_sidebar_shows_the_admin_section_only_to_template_admins(admin_client, client, editor):
+    page = admin_client.get("/admin/portal/claim/").content.decode()
+    assert 'href="/admin/portal/formtemplate/"' in page
+    assert "Willkommen" not in page and "Website anzeigen" not in page
+    assert "/realms/projecttogether/account/" in page
+    client.force_login(editor)
+    page = client.get("/admin/portal/claim/").content.decode()
+    assert 'href="/admin/portal/claim/"' in page
+    assert 'href="/admin/portal/formtemplate/"' not in page
+
+
+def suggestions(client, query):
+    response = client.get("/admin/suche/vorschlaege/", {"q": query})
+    assert response.status_code == 200
+    return {group["label"]: group["items"] for group in response.json()["groups"]}
+
+
+def test_search_finds_only_what_the_person_may_open(client, editor, accepted, template):
+    client.force_login(editor)
+    assert suggestions(client, "Alex") == {}
+    assert suggestions(client, template.name[:6]) == {}
+    accepted.form.owners.add(editor)
+    groups = suggestions(client, "Alex")
+    assert [item["name"] for item in groups["Anträge"]] == ["Alex Beispiel"]
+    assert groups["Anträge"][0]["url"] == f"/admin/portal/claim/{accepted.pk}/change/"
+    assert suggestions(client, accepted.reference[:8]) == {}
+    assert "Anträge" in suggestions(client, accepted.reference)
+    assert suggestions(client, "formu")["Navigation"][0]["url"] == "/admin/portal/form/"
+    assert suggestions(client, "a") == {}
+
+
+def test_template_admins_find_templates_and_settings(admin_client, template):
+    groups = suggestions(admin_client, template.name[:6])
+    assert groups["Vorlagen"][0]["url"] == f"/admin/portal/formtemplate/{template.pk}/change/"
+    assert suggestions(admin_client, "datenschutz")["Navigation"][0]["name"] == "Datenschutzhinweis"
+
+
+def test_search_page_lists_all_results(admin_client, accepted):
+    page = admin_client.get("/admin/suche/", {"q": "Beispiel"}).content.decode()
+    assert "Alex Beispiel" in page and f"/admin/portal/claim/{accepted.pk}/change/" in page
+    assert "Keine Treffer" in admin_client.get("/admin/suche/", {"q": "zzz"}).content.decode()
