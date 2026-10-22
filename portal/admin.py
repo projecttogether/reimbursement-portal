@@ -288,6 +288,7 @@ def value_field(field):
 @admin.register(Form, site=site)
 class FormAdmin(admin.ModelAdmin):
     change_form_template = "admin/portal/form/change_form.html"
+    delete_confirmation_template = "admin/portal/form/delete_confirmation.html"
     list_description = "Über den Link eines Formulars reichen Teilnehmende ihre Auslagen ein."
     add_label = "Formular anlegen"
     search_placeholder = "Name oder Kurzname …"
@@ -320,7 +321,14 @@ class FormAdmin(admin.ModelAdmin):
         return is_form_editor(request.user) and self._owns(request, obj)
 
     def has_delete_permission(self, request, obj=None):
-        return is_template_admin(request.user) and not (obj and obj.claims.exists())
+        return is_template_admin(request.user) and (
+            obj is None or (obj.status == Form.Status.DRAFT and not obj.claims.exists())
+        )
+
+    def delete_view(self, request, object_id, extra_context=None):
+        if request.method == "POST" and request.POST.get("post") != "yes":
+            return JsonResponse({"error": "Bitte bestätige das Löschen des Entwurfs."}, status=400)
+        return super().delete_view(request, object_id, extra_context)
 
     def _owns(self, request, obj):
         return (
@@ -463,6 +471,10 @@ class FormAdmin(admin.ModelAdmin):
             if existing:
                 object_id = str(existing.pk)
         form = self.get_object(request, object_id) if object_id else None
+        extra_context = {
+            **(extra_context or {}),
+            "form_delete_hidden": not (form and self.has_delete_permission(request, form)),
+        }
         if (
             request.method == "GET"
             and form
@@ -510,7 +522,7 @@ class FormAdmin(admin.ModelAdmin):
     def _autosave(request):
         return request.method == "POST" and request.POST.get("_autosave") == "1"
 
-    def _saved_response(self, obj):
+    def _saved_response(self, request, obj):
         return JsonResponse(
             {
                 "url": reverse("admin:portal_form_change", args=[obj.pk]),
@@ -519,17 +531,19 @@ class FormAdmin(admin.ModelAdmin):
                 "status": obj.status,
                 "status_label": obj.get_status_display(),
                 "link": reverse("form_page", kwargs={"form_slug": obj.slug}),
+                "can_delete": self.has_delete_permission(request, obj),
+                "delete_url": reverse("admin:portal_form_delete", args=[obj.pk]),
             }
         )
 
     def response_add(self, request, obj, post_url_continue=None):
         if self._autosave(request):
-            return self._saved_response(obj)
+            return self._saved_response(request, obj)
         return super().response_add(request, obj, post_url_continue)
 
     def response_change(self, request, obj):
         if self._autosave(request):
-            return self._saved_response(obj)
+            return self._saved_response(request, obj)
         return super().response_change(request, obj)
 
     def save_model(self, request, obj, form, change):

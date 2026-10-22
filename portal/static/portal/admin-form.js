@@ -5,11 +5,13 @@
   if (!form || !toggle) return;
 
   const status = document.querySelector("[data-autosave-status]");
+  const saveIndicator = document.querySelector("[data-autosave-indicator]");
   const errors = document.querySelector("[data-autosave-errors]");
   const retry = document.querySelector("[data-autosave-retry]");
   const badge = document.querySelector("[data-form-status]");
   const title = document.querySelector("[data-form-title]");
   const preview = document.querySelector("[data-form-preview]");
+  const deleteLink = document.querySelector("[data-form-delete]");
   const creationKey = window.crypto.randomUUID();
   let creating = !form.querySelector(".field-link");
   let timer;
@@ -22,6 +24,15 @@
 
   function publicationError(action) {
     return action === "publish" ? "Veröffentlichen fehlgeschlagen." : "Unveröffentlichen fehlgeschlagen.";
+  }
+
+  function setSaveStatus(state, message) {
+    saveIndicator.dataset.saveState = state;
+    saveIndicator.querySelectorAll("[data-save-symbol]").forEach((symbol) => {
+      symbol.hidden = symbol.dataset.saveSymbol !== state;
+    });
+    status.classList.toggle("text-destructive", state === "error");
+    status.textContent = message;
   }
 
   function serialize() {
@@ -72,7 +83,8 @@
     observed = current;
     revision += 1;
     dirty = true;
-    status.textContent = "Ungespeicherte Änderungen …";
+    setSaveStatus(saving ? "saving" : "pending",
+      saving ? "Wird gespeichert …" : "Ungespeicherte Änderungen …");
     window.clearTimeout(timer);
     timer = window.setTimeout(save, 600);
   }
@@ -96,8 +108,8 @@
     if (action) data.set("_publication", action);
     saving = true;
     retry.hidden = true;
-    status.textContent = action === "publish" ? "Wird veröffentlicht …" :
-      action === "unpublish" ? "Wird zurückgezogen …" : "Wird gespeichert …";
+    setSaveStatus("saving", action === "publish" ? "Wird veröffentlicht …" :
+      action === "unpublish" ? "Wird zurückgezogen …" : "Wird gespeichert …");
     try {
       const response = await fetch(form.action || window.location.href, {
         method: "POST",
@@ -134,20 +146,23 @@
       toggle.value = result.status === "published" ? "unpublish" : "publish";
       preview.href = result.link;
       preview.hidden = false;
+      deleteLink.href = result.delete_url;
+      deleteLink.hidden = result.status !== "draft" || !result.can_delete;
       const link = form.querySelector(".field-link a");
       if (link) {
         link.href = result.link;
         link.textContent = new URL(result.link, window.location.origin).href;
       }
       dirty = revision !== startedAt;
-      status.textContent = failedPublication ? publicationError(failedPublication) :
-        dirty ? "Ungespeicherte Änderungen …" : "Alle Änderungen gespeichert.";
+      setSaveStatus(failedPublication ? "error" : dirty ? "pending" : "saved",
+        failedPublication ? publicationError(failedPublication) :
+          dirty ? "Ungespeicherte Änderungen …" : "Alle Änderungen gespeichert.");
       retry.hidden = !failedPublication;
     } catch (error) {
       dirty = true;
       if (action) failedPublication = action;
-      status.textContent = failedPublication ? publicationError(failedPublication) :
-        "Speichern fehlgeschlagen. Deine Änderungen sind noch nicht gespeichert.";
+      setSaveStatus("error", failedPublication ? publicationError(failedPublication) :
+        "Speichern fehlgeschlagen. Deine Änderungen sind noch nicht gespeichert.");
       if (errors.hidden) showErrors({ error: error.name === "TypeError" || error.name === "TimeoutError" ?
         "Keine Verbindung. Bitte prüfe deine Internetverbindung und versuche es erneut." : error.message });
       retry.hidden = false;
