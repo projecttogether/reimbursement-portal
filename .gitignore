@@ -9,3 +9,5 @@ staticfiles/
 .coverage
 htmlcov/
 *.egg-info/
+# Built by scripts/tailwind.py.
+portal/static/portal/ui.css
