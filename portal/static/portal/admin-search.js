@@ -187,7 +187,10 @@
   });
   dialog.addEventListener("close", () => {
     clearResults();
-    document.documentElement.classList.remove("overflow-hidden");
+    // The mobile sidebar drawer, which holds the search trigger, keeps its scroll lock.
+    if (document.documentElement.dataset.sidebarOpen !== "true") {
+      document.documentElement.classList.remove("overflow-hidden");
+    }
     if (previousFocus?.isConnected) previousFocus.focus();
   });
 

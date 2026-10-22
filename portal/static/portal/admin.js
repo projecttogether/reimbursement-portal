@@ -89,6 +89,8 @@
   document.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || event.isComposing) return;
     if (event.key === "Escape") {
+      // An open dialog closes itself; Escape closes only the topmost layer.
+      if (document.querySelector("dialog[open]")) return;
       const open = popovers.find((popover) => popover.open);
       if (open) {
         open.open = false;
