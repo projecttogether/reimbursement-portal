@@ -79,6 +79,8 @@ OIDC_OP_LOGOUT_ENDPOINT = f"{KEYCLOAK_REALM_URL}/protocol/openid-connect/logout"
 OIDC_OP_LOGOUT_URL_METHOD = "portal.auth.keycloak_logout_url"
 OIDC_RP_SIGN_ALGO = "RS256"
 OIDC_RP_SCOPES = "openid email profile"
+OIDC_USE_PKCE = True
+OIDC_PKCE_CODE_CHALLENGE_METHOD = "S256"
 OIDC_STORE_ACCESS_TOKEN = False
 # The ID token is the logout hint; without it Keycloak keeps the SSO session.
 OIDC_STORE_ID_TOKEN = True

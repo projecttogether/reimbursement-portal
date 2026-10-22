@@ -39,10 +39,11 @@ conventions in pt-infra (`hetzner/pt-iam/README.md`):
 | Setting | Value |
 | --- | --- |
 | Client ID | e.g. `reimbursement-portal` |
-| Client authentication | On |
+| Client authentication | On (this adds the Credentials tab with the secret) |
 | Standard flow | On; direct access grants and service accounts Off |
+| Require PKCE | On (S256; the portal always sends a code challenge) |
 | Valid redirect URI | `https://reimbursement.projecttogether.org/oidc/callback/` |
-| Web origin | `https://reimbursement.projecttogether.org` |
+| Web origin | `https://reimbursement.projecttogether.org` (no trailing slash) |
 | Valid post logout redirect URI | `https://reimbursement.projecttogether.org/*` |
 
 Add a **Group Membership** mapper to the client's dedicated scope: token claim name

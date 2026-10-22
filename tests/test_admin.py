@@ -115,6 +115,13 @@ def test_admin_login_redirects_to_pt_login(client, oidc):
     assert response.url == "/oidc/authenticate/?next=%2Fadmin%2Fportal%2Fform%2F"
 
 
+def test_sign_in_uses_pkce(client, oidc):
+    response = client.get("/oidc/authenticate/")
+    assert response.status_code == 302
+    query = parse_qs(urlsplit(response.url).query)
+    assert query["code_challenge_method"] == ["S256"] and query["code_challenge"][0]
+
+
 def test_logout_ends_the_keycloak_session(oidc, settings):
     request = RequestFactory().get("/")
     request.session = {"oidc_id_token": "id-token"}
