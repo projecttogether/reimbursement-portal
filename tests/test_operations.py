@@ -65,7 +65,6 @@ def test_unsafe_production_settings_refuse_startup(tmp_path, override):
         "ALLOWED_HOSTS": "test.invalid",
         "MAILERSEND_API_TOKEN": "synthetic",
         "MAILERSEND_WEBHOOK_SIGNING_SECRET": "synthetic",
-        "MAIL_FROM_ADDRESS": "test@example.invalid",
         "APPROVED_DELIVERY_RECIPIENTS": "test@example.invalid",
         "HEALTHCHECK_TOKEN": "synthetic",
         **override,

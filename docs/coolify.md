@@ -3,7 +3,7 @@
 The application is one Coolify resource built from `compose.coolify.yaml`: the
 `web` HTTP service, one `worker`, ClamAV (`scanner`) and a one-time `migrate` job.
 All of them use the same image. PostgreSQL is a separate Coolify database resource.
-Every form is served from the one domain at `/f/<slug>/`; admins create forms in
+Every form is served from the one domain `reimbursement.projecttogether.org` at `/f/<slug>/`; admins create forms in
 the admin area at `/admin/` instead of deploying anything per cost center.
 
 ## 1. Prepare the host
@@ -41,9 +41,9 @@ conventions in pt-infra (`hetzner/pt-iam/README.md`):
 | Client ID | e.g. `reimbursement-portal` |
 | Client authentication | On |
 | Standard flow | On; direct access grants and service accounts Off |
-| Valid redirect URI | `https://<domain>/oidc/callback/` |
-| Web origin | `https://<domain>` |
-| Valid post logout redirect URI | `https://<domain>/*` |
+| Valid redirect URI | `https://reimbursement.projecttogether.org/oidc/callback/` |
+| Web origin | `https://reimbursement.projecttogether.org` |
+| Valid post logout redirect URI | `https://reimbursement.projecttogether.org/*` |
 
 Add a **Group Membership** mapper to the client's dedicated scope: token claim name
 `groups`, full group path On, added to the ID token and userinfo. Do not request a
@@ -56,8 +56,9 @@ Add a **Group Membership** mapper to the client's dedicated scope: token claim n
 
 Sign-in requires a verified email address and one of the groups. Roles are taken
 from the groups at every sign-in; an admin session lasts at most eight hours.
-Copy the client ID and the client secret into `OIDC_CLIENT_ID` and
-`OIDC_CLIENT_SECRET`. The domain can be chosen later; update the redirect URIs then.
+Copy the client ID into `OIDC_CLIENT_ID`. The secret is in the client's
+**Credentials** tab (Client Authenticator "Client Id and Secret"); copy it into
+`OIDC_CLIENT_SECRET`. Regenerating it there invalidates the old value.
 
 ## 4. Deploy the application
 
@@ -70,15 +71,17 @@ Copy the client ID and the client secret into `OIDC_CLIENT_ID` and
    `REPLACE_WITH` value. Keep secrets runtime-only.
 3. Generate `DJANGO_SECRET_KEY` (at least 50 characters) and `HEALTHCHECK_TOKEN`,
    e.g. with `openssl rand -hex 32` each.
-4. Set `ALLOWED_HOSTS` to the domain plus `localhost,127.0.0.1`,
-   `CSRF_TRUSTED_ORIGINS` to its HTTPS origin, and `TRUSTED_PROXY_CIDRS` to the
+4. Set `ALLOWED_HOSTS` to `reimbursement.projecttogether.org,localhost,127.0.0.1`,
+   `CSRF_TRUSTED_ORIGINS` to `https://reimbursement.projecttogether.org`, and `TRUSTED_PROXY_CIDRS` to the
    actual proxy networks, never a universal CIDR. For a network named `coolify`:
    `docker network inspect coolify --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}'`.
-5. Set the MailerSend token, verified sender, reply-to address and webhook signing
-   secret. `APPROVED_DELIVERY_RECIPIENTS` lists every Moss/Finance inbox that forms
+5. Set the MailerSend token and webhook signing secret. Every form sends from
+   `no-reply@projecttogether.org` with reply-to `buchhaltung@projecttogether.org`;
+   both are fixed in the code, so `projecttogether.org` must be a verified
+   MailerSend domain. `APPROVED_DELIVERY_RECIPIENTS` lists every Moss/Finance inbox that forms
    may send to; admins choose one of them per form.
-6. Assign only `web` the public domain, for example
-   `https://erstattung.example.org:8000`, and point DNS to the server.
+6. Assign only `web` the public domain `https://reimbursement.projecttogether.org:8000` and point DNS to the
+   server.
 7. Deploy after PostgreSQL is healthy. `migrate` must exit successfully; web, worker
    and scanner must become healthy. ClamAV's first signature download can take
    several minutes. The first migration creates the initial privacy notice and the
@@ -88,14 +91,14 @@ Static files are collected during the image build with development defaults; thi
 needs no database or secrets. The running containers require all settings above.
 
 If there is no MailerSend webhook yet, deploy with a temporary random signing
-secret. Then create a version 2 webhook for `https://<domain>/webhooks/mailersend/`,
+secret. Then create a version 2 webhook for `https://reimbursement.projecttogether.org/webhooks/mailersend/`,
 set its signing secret and redeploy. Enable sent, delivered, deferred, soft/hard
 bounce and suppressed events where supported; disable open, click and content
 tracking.
 
 ## 5. Verify and operate
 
-1. Sign in at `https://<domain>/admin/` with PT Login. Review the privacy notice
+1. Sign in at `https://reimbursement.projecttogether.org/admin/` with PT Login. Review the privacy notice
    (Datenschutzhinweise) and the template; adjust or add templates if needed.
 2. Create a form: choose the template, set the internal values (KST, KTR, ID),
    the purpose options, the recipient and the support contact. New forms are

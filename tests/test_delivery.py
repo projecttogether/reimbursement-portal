@@ -69,6 +69,8 @@ def test_timeout_after_transmission_is_not_automatically_resent(delivery, settin
         calls.append(request)
         payload = json.loads(request.content)
         assert payload["to"] == [{"email": "finance@example.invalid"}]
+        assert payload["from"]["email"] == "no-reply@projecttogether.org"
+        assert payload["reply_to"] == {"email": "buchhaltung@projecttogether.org"}
         assert payload["settings"] == {
             "track_opens": False,
             "track_clicks": False,

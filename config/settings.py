@@ -173,8 +173,9 @@ CLAMAV_PORT = int(os.getenv("CLAMAV_PORT", "3310"))
 MAIL_DELIVERY_MODE = os.getenv("MAIL_DELIVERY_MODE", "local" if DEBUG else "mailersend")
 MAILERSEND_API_TOKEN = os.getenv("MAILERSEND_API_TOKEN", "")
 MAILERSEND_WEBHOOK_SIGNING_SECRET = os.getenv("MAILERSEND_WEBHOOK_SIGNING_SECRET", "")
-MAIL_FROM_ADDRESS = os.getenv("MAIL_FROM_ADDRESS", "reimbursement@example.invalid" if DEBUG else "")
-MAIL_REPLY_TO_ADDRESS = os.getenv("MAIL_REPLY_TO_ADDRESS", MAIL_FROM_ADDRESS)
+# Fixed for every form; the sender domain must be verified in MailerSend.
+MAIL_FROM_ADDRESS = "no-reply@projecttogether.org"
+MAIL_REPLY_TO_ADDRESS = "buchhaltung@projecttogether.org"
 APPROVED_DELIVERY_RECIPIENTS = list(
     filter(
         None,
@@ -219,7 +220,6 @@ if not DEBUG:
         "ALLOWED_HOSTS",
         "HEALTHCHECK_TOKEN",
         "MAILERSEND_API_TOKEN",
-        "MAIL_FROM_ADDRESS",
         "MAILERSEND_WEBHOOK_SIGNING_SECRET",
         "APPROVED_DELIVERY_RECIPIENTS",
         "OIDC_CLIENT_ID",
