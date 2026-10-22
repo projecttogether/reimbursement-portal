@@ -6,7 +6,7 @@ from django import forms
 from django.conf import settings
 from django.contrib import admin, messages
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.http import Http404, HttpResponseRedirect
+from django.http import Http404, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
@@ -15,6 +15,7 @@ from django.utils.html import format_html
 from django.utils.http import url_has_allowed_host_and_scheme, urlencode
 from mozilla_django_oidc.views import OIDCLogoutView
 
+from portal import admin_navigation
 from portal.models import (
     Claim,
     Form,
@@ -25,6 +26,7 @@ from portal.models import (
 )
 from portal.roles import is_form_editor, is_template_admin
 from portal.services import delivery, operations
+from portal.templatetags.ui import render_component
 
 
 class PortalAdminSite(admin.AdminSite):
@@ -56,14 +58,48 @@ class PortalAdminSite(admin.AdminSite):
             return OIDCLogoutView.as_view()(request)
         return super().logout(request, extra_context)
 
+    def each_context(self, request):
+        context = super().each_context(request)
+        if self.has_permission(request):
+            context["nav_sections"] = admin_navigation.sections(request)
+            context["settings_tabs"] = admin_navigation.settings_tabs(request)
+            context["account_url"] = settings.KEYCLOAK_ACCOUNT_URL
+        return context
+
+    def index(self, request, extra_context=None):
+        return redirect("admin:portal_claim_changelist")
+
+    def app_index(self, request, app_label, extra_context=None):
+        return redirect("admin:portal_claim_changelist")
+
     def get_urls(self):
         return [
             path("kein-zugriff/", self.no_access, name="no_access"),
+            path("suche/", self.admin_view(self.search), name="search"),
+            path(
+                "suche/vorschlaege/",
+                self.admin_view(self.search_suggestions),
+                name="search_suggestions",
+            ),
             *super().get_urls(),
         ]
 
     def no_access(self, request):
         return render(request, "admin/portal/no_access.html", status=403)
+
+    def search(self, request):
+        query = request.GET.get("q", "")[:100]
+        groups = admin_navigation.search(request, self, query, admin_navigation.RESULT_LIMIT)
+        return TemplateResponse(
+            request,
+            "admin/portal/search.html",
+            {**self.each_context(request), "title": "Suche", "query": query, "groups": groups},
+        )
+
+    def search_suggestions(self, request):
+        query = request.GET.get("q", "")[:100]
+        groups = admin_navigation.search(request, self, query, admin_navigation.SUGGESTION_LIMIT)
+        return JsonResponse({"groups": groups})
 
 
 site = PortalAdminSite(name="admin")
@@ -90,6 +126,11 @@ class RoleAdmin(admin.ModelAdmin):
 
 @admin.register(PrivacyNotice, site=site)
 class PrivacyNoticeAdmin(RoleAdmin):
+    list_description = (
+        "Teilnehmende sehen immer die neueste Version. Jede Änderung wird als neue Version "
+        "gespeichert."
+    )
+    add_label = "Neue Version"
     list_display = ["__str__", "created_at", "created_by", "is_current"]
     fields = ["text"]
 
@@ -139,7 +180,13 @@ class TemplateFieldInline(admin.TabularInline):
 
 @admin.register(FormTemplate, site=site)
 class FormTemplateAdmin(RoleAdmin):
+    list_description = (
+        "Vorlagen legen fest, welche internen Werte und Angaben ein Formular abfragt."
+    )
+    add_label = "Vorlage anlegen"
+    search_placeholder = "Name oder Beschreibung …"
     list_display = ["name", "travel", "mileage_enabled", "form_count", "updated_at"]
+    search_fields = ["name", "description"]
     inlines = [TemplateFieldInline]
     fieldsets = [
         (None, {"fields": ["name", "description"]}),
@@ -211,6 +258,10 @@ def value_field(field):
 
 @admin.register(Form, site=site)
 class FormAdmin(admin.ModelAdmin):
+    list_description = "Über den Link eines Formulars reichen Teilnehmende ihre Auslagen ein."
+    add_label = "Formular anlegen"
+    search_placeholder = "Name oder Kurzname …"
+    empty_description = "Lege ein Formular aus einer Vorlage an und teile den Link."
     list_display = [
         "name",
         "template",
@@ -374,11 +425,33 @@ DELIVERY_STATUS = {
 }
 
 
-def claim_status(claim):
+# Badge tones of claim and delivery states.
+STATUS_TONES = {
+    Claim.State.FAILED: "destructive",
+    Claim.State.PURGING: "outline",
+    Claim.State.PURGED: "outline",
+    "paused": "warning",
+    "send_unknown": "warning",
+    "failed": "destructive",
+    "delivered": "success",
+}
+
+
+def claim_status_parts(claim):
+    """The claim state, or the delivery state once a delivery exists."""
     current = getattr(claim, "delivery", None)
     if claim.state in {Claim.State.PURGING, Claim.State.PURGED} or current is None:
-        return claim.get_state_display()
-    return DELIVERY_STATUS.get(current.state, current.state)
+        return claim.state, claim.get_state_display()
+    return current.state, DELIVERY_STATUS.get(current.state, current.state)
+
+
+def claim_status(claim):
+    return claim_status_parts(claim)[1]
+
+
+def claim_status_badge(claim):
+    key, label = claim_status_parts(claim)
+    return render_component("badge", label, variant=STATUS_TONES.get(key, "secondary"))
 
 
 class RetryForm(forms.Form):
@@ -397,7 +470,7 @@ class RetryForm(forms.Form):
 class OperationInline(admin.TabularInline):
     model = Operation
     extra = 0
-    fields = ["created_at", "action", "actor", "reason"]
+    fields = ["when", "what", "who", "why"]
     readonly_fields = fields
     can_delete = False
     verbose_name = "Aktion"
@@ -412,9 +485,28 @@ class OperationInline(admin.TabularInline):
     def has_change_permission(self, request, obj=None):
         return False
 
+    @admin.display(description="Zeitpunkt")
+    def when(self, obj):
+        return obj.created_at
+
+    @admin.display(description="Aktion")
+    def what(self, obj):
+        return obj.action
+
+    @admin.display(description="Durch")
+    def who(self, obj):
+        return obj.actor
+
+    @admin.display(description="Grund")
+    def why(self, obj):
+        return obj.reason
+
 
 @admin.register(Claim, site=site)
 class ClaimAdmin(admin.ModelAdmin):
+    list_description = "Eingereichte Anträge und ihr Verarbeitungsstand."
+    search_placeholder = "Name, E-Mail oder Referenz …"
+    empty_description = "Sobald Teilnehmende ein Formular einreichen, erscheint der Antrag hier."
     list_display = [
         "short_reference",
         "form",
@@ -430,14 +522,26 @@ class ClaimAdmin(admin.ModelAdmin):
     date_hierarchy = "submitted_at"
     inlines = [OperationInline]
     fieldsets = [
-        (None, {"fields": ["reference", "form", "submitted_at", "full_name", "email", "total"]}),
+        (
+            None,
+            {
+                "fields": [
+                    "reference_display",
+                    "form",
+                    "submitted_at",
+                    "full_name",
+                    "email",
+                    "total",
+                ]
+            },
+        ),
         (
             "Verarbeitung",
             {"fields": ["status", "error", "pdf_removed_at", "retention_due", "overdue"]},
         ),
     ]
     readonly_fields = [
-        "reference",
+        "reference_display",
         "form",
         "submitted_at",
         "full_name",
@@ -482,26 +586,32 @@ class ClaimAdmin(admin.ModelAdmin):
         except ValueError:
             return super().get_search_results(request, queryset, search_term)
 
+    @admin.display(description="Referenz")
+    def reference_display(self, obj):
+        return obj.reference
+
     @admin.display(description="Referenz", ordering="id")
     def short_reference(self, obj):
         return str(obj.id)[:8]
 
     @admin.display(description="Status")
     def status(self, obj):
-        return claim_status(obj)
+        return claim_status_badge(obj)
 
     @admin.display(description="Fehler")
     def error(self, obj):
         current = getattr(obj, "delivery", None)
         return obj.error_code or (current.error_code if current else "") or "—"
 
-    @admin.display(description="Klärung überfällig", boolean=True)
+    @admin.display(description="Klärung")
     def overdue(self, obj):
-        return (
+        if (
             obj.resolution_due <= timezone.now()
             and not obj.retention_due
             and obj.state != Claim.State.PURGED
-        )
+        ):
+            return render_component("badge", "Überfällig", variant="warning")
+        return "—"
 
     def get_urls(self):
         return [
