@@ -17,9 +17,16 @@ USER portal
 ENV PATH="/app/.venv/bin:$PATH"
 CMD ["pytest", "-q"]
 
+FROM base AS assets
+# The stylesheet is built here with the pinned standalone Tailwind CLI; no Node.
+COPY scripts/tailwind.py scripts/
+COPY portal portal
+RUN python scripts/tailwind.py build
+
 FROM base AS runtime
 RUN uv sync --locked --no-dev
 COPY . .
+COPY --from=assets /app/portal/static/portal/ui.css portal/static/portal/ui.css
 # Coolify injects deployment variables as build arguments. Static assets need
 # only development defaults, even when those arguments are empty or unresolved.
 RUN env -i PATH="$PATH" PYTHONDONTWRITEBYTECODE=1 DJANGO_DEBUG=1 DEPLOYMENT_ENV=development \

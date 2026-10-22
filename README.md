@@ -21,6 +21,20 @@ Open <http://localhost:8000/f/demo/> and use dummy data. Emails are captured
 locally. ClamAV's first startup can take several minutes. The admin area is at
 <http://localhost:8000/admin/>; locally it accepts the superuser's password.
 
+## Interface styles
+
+Templates use Tailwind classes and the components in `portal/templates/ui/`, ported
+from [shadcn-django](https://shadcn-django.com/) and rendered with
+`{% component %}` from `portal/templatetags/ui.py`. The stylesheet source is
+`portal/assets/ui.css`. The Docker image builds it with the pinned standalone
+Tailwind CLI. To run Django outside Docker, build it first; `watch` rebuilds while you
+edit templates:
+
+```bash
+python scripts/tailwind.py build
+python scripts/tailwind.py watch
+```
+
 ## Admin area
 
 Admins sign in with PT Login (Keycloak) at `/admin/`. Template admins define
