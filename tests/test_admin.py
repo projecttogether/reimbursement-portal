@@ -273,6 +273,7 @@ def test_new_forms_autosave_as_incomplete_drafts(admin_client, template, client)
     assert form.instructions == "Erste Notiz" and form.name == "Neues Formular" and form.slug
     assert form.field_values == {"kst": "", "ktr": ""}
     assert form.owners.get().username == "admin"
+    assert response.json()["can_delete"]
     assert response.json()["url"] == f"/admin/portal/form/{form.pk}/change/"
     client.logout()
     assert client.get(response.json()["link"]).status_code == 403
@@ -316,11 +317,13 @@ def test_publishing_validates_then_unpublishing_closes_the_form(admin_client, cl
     assert form.status == Form.Status.DRAFT
     response = admin_client.post(url, form_settings(form, _publication="publish"))
     assert response.status_code == 200 and response.json()["status"] == "published"
+    assert not response.json()["can_delete"]
     form.refresh_from_db()
     assert form.is_open()
     assert "Unveröffentlichen" in admin_client.get(url).content.decode()
     response = admin_client.post(url, form_settings(form, _publication="unpublish"))
     assert response.status_code == 200 and response.json()["status"] == "draft"
+    assert response.json()["can_delete"]
     form.refresh_from_db()
     assert not form.is_open()
     client.logout()
@@ -362,6 +365,7 @@ def test_autosave_and_publication_require_ownership(client, editor, form):
     form.owners.add(editor)
     response = client.post(url, form_settings(form, _publication="unpublish"))
     assert response.status_code == 200
+    assert not response.json()["can_delete"]
     form.refresh_from_db()
     assert form.status == Form.Status.DRAFT
     assert form.owners.filter(pk=editor.pk).exists()
@@ -378,6 +382,75 @@ def test_status_cannot_be_changed_through_autosave_fields(admin_client, form):
 def test_form_list_shows_publication_status(admin_client, form):
     page = admin_client.get("/admin/portal/form/").content.decode()
     assert "Veröffentlicht" in page and ">Status<" in page
+
+
+def test_draft_deletion_requires_confirmation(admin_client, form):
+    form.status = Form.Status.DRAFT
+    form.save()
+    url = f"/admin/portal/form/{form.pk}/delete/"
+    response = admin_client.get(url)
+    assert response.status_code == 200
+    assert "Entwurf endgültig löschen" in response.content.decode()
+    assert "Abbrechen" in response.content.decode()
+    assert Form.objects.filter(pk=form.pk).exists()
+    response = admin_client.post(url, {"csrfmiddlewaretoken": "not-a-confirmation"})
+    assert response.status_code == 400
+    assert Form.objects.filter(pk=form.pk).exists()
+    response = admin_client.post(url, {"post": "yes"})
+    assert response.status_code == 302
+    assert not Form.objects.filter(pk=form.pk).exists()
+
+
+def test_published_forms_cannot_be_deleted(admin_client, form):
+    response = admin_client.get(f"/admin/portal/form/{form.pk}/change/")
+    assert response.context["form_delete_hidden"]
+    assert not response.context["has_delete_permission"]
+    url = f"/admin/portal/form/{form.pk}/delete/"
+    assert admin_client.get(url).status_code == 403
+    assert admin_client.post(url, {"post": "yes"}).status_code == 403
+    assert Form.objects.filter(pk=form.pk).exists()
+
+
+def test_publishing_after_opening_delete_confirmation_prevents_deletion(admin_client, form):
+    form.status = Form.Status.DRAFT
+    form.save()
+    url = f"/admin/portal/form/{form.pk}/delete/"
+    assert admin_client.get(url).status_code == 200
+    form.status = Form.Status.PUBLISHED
+    form.save()
+    assert admin_client.post(url, {"post": "yes"}).status_code == 403
+    assert Form.objects.filter(pk=form.pk).exists()
+
+
+def test_drafts_with_submitted_claims_cannot_be_deleted(admin_client, accepted):
+    form = accepted.form
+    form.status = Form.Status.DRAFT
+    form.save()
+    response = admin_client.get(f"/admin/portal/form/{form.pk}/change/")
+    assert response.context["form_delete_hidden"]
+    url = f"/admin/portal/form/{form.pk}/delete/"
+    assert admin_client.post(url, {"post": "yes"}).status_code == 403
+    assert Claim.objects.filter(pk=accepted.pk).exists()
+
+
+def test_bulk_deletion_cannot_include_a_published_form(admin_client, form):
+    draft = Form.objects.create(
+        template=form.template,
+        name="Entwurf",
+        slug="entwurf",
+        recipient=form.recipient,
+        support_email=form.support_email,
+    )
+    response = admin_client.post(
+        "/admin/portal/form/",
+        {
+            "action": "delete_selected",
+            "_selected_action": [str(form.pk), str(draft.pk)],
+            "post": "yes",
+        },
+    )
+    assert response.status_code == 403
+    assert Form.objects.filter(pk__in=[form.pk, draft.pk]).count() == 2
 
 
 def test_admin_adds_a_new_privacy_notice_version(admin_client, privacy_notice):

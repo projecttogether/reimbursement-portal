@@ -1,5 +1,5 @@
 // Publication regressions against a real admin editor; all save requests are intercepted.
-// Requires FORM_ADMIN_URL for a local draft and ADMIN_STORAGE_STATE for a local admin session.
+// Requires FORM_ADMIN_URL for an unused local draft and ADMIN_STORAGE_STATE for a local admin session.
 const { chromium } = require("playwright");
 const assert = require("node:assert/strict");
 
@@ -22,12 +22,15 @@ if (!editorUrl || !storageState)
     const retry = page.locator("[data-autosave-retry]");
     const status = page.locator("[data-autosave-status]");
     const badge = page.locator("[data-form-status]");
+    const indicator = page.locator("[data-autosave-indicator]");
+    const deleteLink = page.locator("[data-form-delete]");
     const pathname = new URL(editorUrl).pathname;
     const slug = await page.locator("#id_slug").inputValue();
     let serverStatus = await badge.getAttribute("data-status");
     assert.equal(serverStatus, "draft", "Use a draft form for this test.");
     const actions = [];
     let failure = null;
+    let delayNextSave = null;
 
     const field = (body, name) =>
       body.match(new RegExp(`name="${name}"\\r\\n\\r\\n([^\\r\\n]*)`))?.[1] || "";
@@ -38,6 +41,9 @@ if (!editorUrl || !storageState)
       actions.push(action);
       const fail = failure;
       failure = null;
+      const delay = delayNextSave;
+      delayNextSave = null;
+      if (delay) await delay;
       if (fail === "network") return route.abort("failed");
       if (fail === "http")
         return route.fulfill({ status: 503, json: { error: "Synthetic server failure" } });
@@ -51,12 +57,17 @@ if (!editorUrl || !storageState)
           status: serverStatus,
           status_label: serverStatus === "published" ? "Veröffentlicht" : "Entwurf",
           link: `/f/${slug}/`,
+          delete_url: pathname.replace(/change\/$/, "delete/"),
+          can_delete: serverStatus === "draft",
         },
       });
     });
 
     async function saved() {
       await page.getByText("Alle Änderungen gespeichert.", { exact: true }).waitFor();
+      assert.equal(await indicator.getAttribute("data-save-state"), "saved");
+      assert.equal(await page.locator('[data-save-symbol="saved"]').isVisible(), true);
+      assert.equal(await deleteLink.isVisible(), serverStatus === "draft");
     }
 
     async function failedThenRetry(action, mode, editWhileFailed = false) {
@@ -64,6 +75,8 @@ if (!editorUrl || !storageState)
       const before = actions.length;
       await toggle.click();
       await retry.waitFor({ state: "visible" });
+      assert.equal(await indicator.getAttribute("data-save-state"), "error");
+      assert.equal(await page.locator('[data-save-symbol="error"]').isVisible(), true);
       assert.equal(actions.at(-1), action);
       await page.waitForTimeout(700);
       assert.equal(actions.length, before + 1, "Failures must wait for an explicit retry.");
@@ -124,6 +137,32 @@ if (!editorUrl || !storageState)
         assert.equal(serverStatus, expected === "draft" ? "published" : "draft");
       }
       console.log("Passed implicit Enter submissions and explicit keyboard publication.");
+    }
+    if (scenario === "all") {
+      let finishSave;
+      delayNextSave = new Promise((resolve) => { finishSave = resolve; });
+      const requested = page.waitForRequest((request) =>
+        request.method() === "POST" && new URL(request.url()).pathname === pathname);
+      await page.locator("#id_instructions").fill("Synthetic save indicator check");
+      await requested;
+      assert.equal(await indicator.getAttribute("data-save-state"), "saving");
+      assert.equal(await page.locator('[data-save-symbol="saving"]').isVisible(), true);
+      assert.equal(await page.locator('[data-save-symbol="saved"]').isVisible(), false);
+      finishSave();
+      await saved();
+      const toolbar = page.locator("[data-form-toolbar]");
+      const controls = await Promise.all([
+        toolbar.locator("[data-publication-toggle]").boundingBox(),
+        toolbar.getByRole("link", { name: "Vorschau", exact: true }).boundingBox(),
+        toolbar.getByRole("link", { name: "Verlauf", exact: true }).boundingBox(),
+      ]);
+      assert.ok(controls.every((box) => box && Math.abs(box.y - controls[0].y) < 1));
+      await deleteLink.click();
+      await page.getByRole("heading", { name: "Entwurf löschen?", exact: true }).waitFor();
+      assert.equal(await page.getByRole("button", { name: "Entwurf endgültig löschen", exact: true }).isVisible(), true);
+      await page.getByRole("link", { name: "Abbrechen", exact: true }).click();
+      await page.locator("[data-publication-toggle]").waitFor();
+      console.log("Passed save indicators, toolbar alignment, draft deletion visibility, and confirmation cancellation.");
     }
     assert.deepEqual(errors, []);
   } finally {
