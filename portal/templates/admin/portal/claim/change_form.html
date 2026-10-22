@@ -1,2 +1,2 @@
-{% extends "admin/change_form.html" %}
-{% block object-tools-items %}{% if can_retry %}<li><a href="{{ retry_url }}">Erneut verarbeiten</a></li>{% endif %}{{ block.super }}{% endblock %}
+{% extends "admin/change_form.html" %}{% load ui %}
+{% block page-actions %}{% if can_retry %}{% component "button" variant="outline" size="sm" href=retry_url %}{% icon "refresh-cw" %}Erneut verarbeiten{% endcomponent %}{% endif %}{{ block.super }}{% endblock %}

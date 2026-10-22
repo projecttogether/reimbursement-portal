@@ -151,6 +151,16 @@ class PrivacyNoticeAdmin(RoleAdmin):
         current = PrivacyNotice.current()
         return bool(current and current.pk == obj.pk)
 
+    def get_form(self, request, obj=None, change=False, **kwargs):
+        kwargs["help_texts"] = {
+            "text": "Eine Leerzeile trennt Absätze. Eine Zeile mit „# “ am Anfang wird zur Überschrift."
+        }
+        return super().get_form(request, obj, change, **kwargs)
+
+    def add_view(self, request, form_url="", extra_context=None):
+        extra_context = {**(extra_context or {}), "show_save_and_add_another": False}
+        return super().add_view(request, form_url, extra_context)
+
     def get_changeform_initial_data(self, request):
         current = PrivacyNotice.current()
         return {"text": current.text} if current else {}
@@ -659,6 +669,7 @@ class ClaimAdmin(admin.ModelAdmin):
                 "title": "Antrag erneut verarbeiten",
                 "claim": claim,
                 "status": claim_status(claim),
+                "status_badge": claim_status_badge(claim),
                 "duplicate_risk": bool(current and current.state != delivery.FAILED),
                 "form": form,
             },
