@@ -74,9 +74,13 @@ below the previous incorrect 600 MB persistent-workspace threshold.
 
 ## Required staging and owner evidence
 
-- Finance approves the event's accounting values, handoff, privacy notice,
-  retention period and handling of unresolved claims. Then set
-  `CONTENT_PURGE_ENABLED=1` with the approved `SUCCESS_RETENTION_DAYS`.
+- Finance approves each form's accounting values, the handoff, the privacy notice,
+  the retention periods (PDF 7 days after delivery, content 30 days after
+  submission) and handling of unresolved claims. Then set `CONTENT_PURGE_ENABLED=1`.
+- The data protection owner approves the privacy notice in the admin area,
+  including the named processors and hosting location.
+- PT Login: the client, its groups mapper and both portal groups exist; a member
+  of each group can sign in and sees only what their role permits.
 - A synthetic claim reaches the approved MailerSend/Moss destination. Inspect all
   pages and the signature, exercise signed callbacks/reconciliation and record the
   result. Provider acceptance and recipient delivery remain distinct states.

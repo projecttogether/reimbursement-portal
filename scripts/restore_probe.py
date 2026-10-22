@@ -17,14 +17,14 @@ from django.conf import settings  # noqa: E402
 from django.core.management import call_command  # noqa: E402
 from django.utils import timezone  # noqa: E402
 
-from portal.models import Claim, Event, Job  # noqa: E402
+from portal.models import Claim, Form, Job  # noqa: E402
 from portal.services.retention import cleanup  # noqa: E402
 
 if (
     not settings.DEBUG
     or settings.MAIL_DELIVERY_MODE != "local"
     or settings.DATABASES["default"]["NAME"] != "capacity_restore"
-    or Event.objects.exclude(privacy_version="demo-only").exists()
+    or Form.objects.exclude(slug="demo").exists()
     or Claim.objects.exclude(
         full_name="Synthetic Participant",
         iban="DE89370400440532013000",

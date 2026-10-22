@@ -1,4 +1,4 @@
-# PT Reimbursement Portal
+# ProjectTogether Reimbursement Portal
 
 Collect reimbursement details, receipts, and signatures, generate a compressed PDF,
 and send it to the configured Moss inbox through MailerSend.
@@ -12,32 +12,32 @@ cp .env.example .env
 docker compose build
 docker compose up -d database scanner
 docker compose run --rm web python manage.py migrate
-docker compose run --rm web python manage.py configure_event --demo
+docker compose run --rm web python manage.py seed_demo
+docker compose run --rm web python manage.py createsuperuser
 docker compose up -d web worker
 ```
 
-Open <http://localhost:8000/forms/demo/> and use dummy data. Emails are captured
-locally. ClamAV's first startup can take several minutes.
+Open <http://localhost:8000/f/demo/> and use dummy data. Emails are captured
+locally. ClamAV's first startup can take several minutes. The admin area is at
+<http://localhost:8000/admin/>; locally it accepts the superuser's password.
+
+## Admin area
+
+Admins sign in with PT Login (Keycloak) at `/admin/`. Template admins define
+templates, the types of forms, including the internal fields each form fills in
+(for example KST, KTR or an ID), and maintain the versioned privacy notice. Form
+editors create forms from a template, set its internal values and purpose options,
+and share the link `/f/<slug>/`. Both see the submitted claims of their forms;
+template admins can retry processing and delivery.
 
 ## Deploy with Coolify
 
-Start one separate PostgreSQL resource in Coolify, then deploy the shared backend
-using `compose.coolify.yaml` and `.env.coolify.example`. The backend owns ClamAV,
-the single worker, migrations, and the MailerSend webhook. Deploy a separate web
-resource per domain using `compose.coolify.web.yaml` and `.env.coolify.web.example`,
-with each cost center configured through `EVENT_*` environment variables. Web
-startup creates or updates its event automatically.
-
-All application resources share the database's complete internal connection URL
-and join its Coolify destination network with Connect To Predefined Network.
-They also share one private storage volume and application network on the same
-host. Each domain serves only its configured event. The backend's single
-signed MailerSend webhook updates deliveries across all events.
-
-Follow the [Coolify deployment steps](docs/coolify.md). For upgrades, stop all web
-resources and the shared worker before migrations, and keep every persistent
-volume. The backend's `exclude_from_hc` field is a Coolify extension; use
-`compose.yaml` for the original local Docker Compose setup.
+Start one separate PostgreSQL resource in Coolify, then deploy the application as
+one resource using `compose.coolify.yaml` and `.env.coolify.example`. It contains
+the web service, the single worker, ClamAV and the migration job. All forms are
+served from one domain. Follow the [Coolify deployment steps](docs/coolify.md),
+including the PT Login client. For upgrades, keep every persistent volume. The
+`exclude_from_hc` field is a Coolify extension; use `compose.yaml` locally.
 
 ## Local CI
 

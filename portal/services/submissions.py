@@ -7,23 +7,92 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from django.utils.crypto import constant_time_compare
+from django.utils.dateparse import parse_date
 
 from portal.forms import ClaimForm
-from portal.intake import EXPENSE_FIELD_LENGTHS, IntakeError, message, parse_amount
-from portal.models import Claim, Event, Expense
+from portal.intake import (
+    EXPENSE_FIELD_LENGTHS,
+    MAX_CLAIM_TOTAL,
+    IntakeError,
+    message,
+    mileage_amount,
+    parse_amount,
+    parse_distance,
+)
+from portal.models import Claim, Expense, Form
 from portal.services import queue, uploads
 from portal.services.delivery import recipient_approved
 from portal.services.drafts import authorize_draft, digest, ensure_accepting
 
 
-def normalized_payload(data, event):
-    form = ClaimForm(data, event=event)
-    if not form.is_valid():
-        raise IntakeError("Bitte prüfe die markierten Angaben.", errors=form.errors.get_json_data())
+def _text(row, key, *, required=True):
+    value = row.get(key, "")
+    if not isinstance(value, str) or len(value.strip()) > EXPENSE_FIELD_LENGTHS[key]:
+        raise ValueError("Ungültige Angabe.")
+    value = value.strip()
+    if required and not value:
+        raise ValueError(REQUIRED_MESSAGES[key])
+    return value
+
+
+REQUIRED_MESSAGES = {
+    "merchant": "Bitte gib den Geschäftspartner an.",
+    "purpose": "Bitte gib Anlass/Zweck an.",
+    "route_from": "Bitte gib den Startort der Fahrt an.",
+    "route_to": "Bitte gib das Ziel der Fahrt an.",
+}
+
+
+def _expense(row, template):
+    """One cleaned expense row without its uploads, or ValueError."""
+    kind = row.get("kind", Expense.Kind.RECEIPT)
+    item = {"kind": kind, "purpose": _text(row, "purpose")}
+    if kind == Expense.Kind.RECEIPT:
+        item["merchant"] = _text(row, "merchant")
+        item["receipt_reference"] = _text(row, "receipt_reference", required=False)
+        item["amount"] = parse_amount(row.get("amount"))
+        return item, 1
+    if kind != Expense.Kind.MILEAGE or not template.mileage_enabled:
+        raise ValueError("Diese Art von Position ist für das Formular nicht freigegeben.")
+    try:
+        travel_date = parse_date(row.get("travel_date") or "")
+    except (TypeError, ValueError):
+        travel_date = None
+    if not travel_date:
+        raise ValueError("Bitte gib das Datum der Fahrt an.")
+    round_trip = row.get("round_trip", False)
+    if not isinstance(round_trip, bool):
+        raise ValueError("Ungültige Angabe zu Hin- und Rückfahrt.")
+    distance = parse_distance(row.get("distance_km"))
+    item.update(
+        {
+            "merchant": "",
+            "receipt_reference": "",
+            "travel_date": travel_date,
+            "route_from": _text(row, "route_from"),
+            "route_to": _text(row, "route_to"),
+            "distance_km": distance,
+            "round_trip": round_trip,
+            "mileage_rate": template.mileage_rate,
+            "amount": mileage_amount(distance, round_trip, template.mileage_rate),
+        }
+    )
+    return item, 0
+
+
+def normalized_payload(data, form):
     expenses = data.get("expenses")
     if not isinstance(expenses, list) or not 1 <= len(expenses) <= settings.MAX_EXPENSES:
         raise IntakeError(message("expense_count"))
-    cleaned, row_ids, all_upload_ids, totals = [], set(), set(), {}
+    has_mileage = any(
+        isinstance(row, dict) and row.get("kind") == Expense.Kind.MILEAGE for row in expenses
+    )
+    claim_form = ClaimForm(data, form=form, has_mileage=has_mileage)
+    if not claim_form.is_valid():
+        raise IntakeError(
+            "Bitte prüfe die markierten Angaben.", errors=claim_form.errors.get_json_data()
+        )
+    cleaned, row_ids, all_upload_ids, total = [], set(), set(), Decimal(0)
     for position, row in enumerate(expenses):
         try:
             if not isinstance(row, dict):
@@ -32,52 +101,44 @@ def normalized_payload(data, event):
             if row_id in row_ids:
                 raise ValueError("Positionen müssen unterschiedliche Kennungen haben.")
             row_ids.add(row_id)
-            item = {"id": row_id}
-            for key, maximum in EXPENSE_FIELD_LENGTHS.items():
-                value = row.get(key)
-                if not isinstance(value, str) or not 1 <= len(value.strip()) <= maximum:
-                    raise ValueError(
-                        "Geschäftspartner, Anlass und Belegreferenz sind erforderlich."
-                    )
-                item[key] = value.strip()
-            currency = row.get("currency")
-            if currency not in event.allowed_currencies:
-                raise ValueError("Diese Währung ist für das Formular nicht freigegeben.")
-            amount = parse_amount(row.get("amount"), currency)
+            item, minimum_files = _expense(row, form.template)
             ids = row.get("uploads")
-            if not isinstance(ids, list) or not 1 <= len(ids) <= settings.MAX_FILES_PER_EXPENSE:
-                raise ValueError(message("files_per_expense"))
+            if (
+                not isinstance(ids, list)
+                or not minimum_files <= len(ids) <= settings.MAX_FILES_PER_EXPENSE
+            ):
+                raise ValueError(message("files_per_expense" if minimum_files else "mileage_files"))
             ids = [str(uuid.UUID(value)) for value in ids]
             if len(set(ids)) != len(ids) or all_upload_ids.intersection(ids):
                 raise ValueError("Eine Belegdatei darf nur einmal zugeordnet werden.")
             all_upload_ids.update(ids)
-            item.update(
-                {"currency": currency, "amount": str(amount), "uploads": ids, "position": position}
-            )
-            totals[currency] = totals.get(currency, Decimal(0)) + amount
+            item.update({"id": row_id, "uploads": ids, "position": position})
+            total += item["amount"]
             cleaned.append(item)
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise IntakeError(f"Position {position + 1}: {exc}") from exc
-    payload = {
-        key: value.isoformat() if hasattr(value, "isoformat") else value
-        for key, value in form.cleaned_data.items()
-    }
+    if total > MAX_CLAIM_TOTAL:
+        raise IntakeError("Die Summe aller Positionen ist zu hoch. Bitte prüfe die Beträge.")
+    payload = dict(claim_form.cleaned_data)
     try:
         payload["signature"] = str(uuid.UUID(data["signature"]))
     except (KeyError, ValueError, TypeError, AttributeError) as exc:
         raise IntakeError("Bitte zeichne oder lade eine Unterschrift hoch.") from exc
     payload["expenses"] = cleaned
-    payload["config_version"] = data.get("config_version")
-    return payload, {currency: str(amount) for currency, amount in totals.items()}
+    return payload, total
 
 
 @transaction.atomic
-def submit_claim(request, event_slug, data):
+def submit_claim(request, form_slug, data):
     if not isinstance(data, dict) or data.get("website"):
         raise IntakeError("Ungültige Anfrage.")
-    draft = authorize_draft(request, data.get("draft_id"), data.get("token"), event_slug, lock=True)
-    event = Event.objects.select_for_update().get(pk=draft.event_id)
-    # Compare an exact canonical request on replay, even if the event changed or closed later.
+    draft = authorize_draft(request, data.get("draft_id"), data.get("token"), form_slug, lock=True)
+    form = (
+        Form.objects.select_for_update(of=("self",))
+        .select_related("template")
+        .get(pk=draft.form_id)
+    )
+    # Compare an exact canonical request on replay, even if the form changed or closed later.
     replay_data = {key: value for key, value in data.items() if key not in {"token", "website"}}
     payload_hash = digest(
         json.dumps(replay_data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -88,10 +149,10 @@ def submit_claim(request, event_slug, data):
                 "Dieses Formular wurde bereits mit anderen Angaben eingereicht.", status=409
             )
         return draft.claim
-    ensure_accepting(draft, event, form_version=data.get("config_version"))
-    if not recipient_approved(event.recipient):
+    ensure_accepting(draft, form, form_version=data.get("config_version"))
+    if not recipient_approved(form.recipient):
         raise IntakeError("Das Formular ist derzeit nicht verfügbar.", status=503)
-    payload, totals = normalized_payload(data, event)
+    payload, total = normalized_payload(data, form)
     all_ids = [file_id for row in payload["expenses"] for file_id in row["uploads"]] + [
         payload["signature"]
     ]
@@ -111,18 +172,14 @@ def submit_claim(request, event_slug, data):
     fields = {
         key: value
         for key, value in payload.items()
-        if key
-        not in {"signature", "expenses", "declaration", "privacy_acknowledged", "config_version"}
+        if key not in {"signature", "expenses", "declaration", "privacy_acknowledged", "is_trip"}
     }
     claim = Claim.objects.create(
-        event=event,
-        snapshot=event.snapshot(),
-        totals=totals,
-        resolution_due=timezone.now() + timedelta(days=30),
-        **{
-            key: value or None if key in {"trip_start", "trip_end"} else value
-            for key, value in fields.items()
-        },
+        form=form,
+        snapshot=form.snapshot(),
+        total=total,
+        resolution_due=timezone.now() + timedelta(days=settings.CONTENT_RETENTION_DAYS),
+        **fields,
     )
     for row in payload["expenses"]:
         for position, file_id in enumerate(row["uploads"]):

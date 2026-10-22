@@ -12,35 +12,35 @@ from portal.services.retention import cleanup
 pytestmark = pytest.mark.django_db
 
 
-def test_cookie_resets_cannot_exhaust_draft_capacity(event, settings):
+def test_cookie_resets_cannot_exhaust_draft_capacity(form, settings):
     settings.MAX_DRAFTS_PER_NETWORK = 3
     clients = [Client() for _ in range(4)]
-    assert [client.get("/forms/test/").status_code for client in clients] == [200, 200, 200, 429]
+    assert [client.get("/f/test/").status_code for client in clients] == [200, 200, 200, 429]
     assert Draft.objects.count() == 3
     assert Session.objects.count() == 3
     assert DraftAdmission.objects.get().count == 3
     # Existing work is accessible after the new-draft budget is exhausted.
-    assert clients[0].get("/forms/test/").status_code == 200
-    assert Client().get("/forms/test/", REMOTE_ADDR="192.0.2.5").status_code == 200
+    assert clients[0].get("/f/test/").status_code == 200
+    assert Client().get("/f/test/", REMOTE_ADDR="192.0.2.5").status_code == 200
     # A direct caller cannot bypass the limit by inventing a forwarded address.
-    assert Client().get("/forms/test/", HTTP_X_FORWARDED_FOR="192.0.2.6").status_code == 429
+    assert Client().get("/f/test/", HTTP_X_FORWARDED_FOR="192.0.2.6").status_code == 429
 
 
-def test_expired_budget_resets_and_old_keys_are_cleaned(event, settings):
+def test_expired_budget_resets_and_old_keys_are_cleaned(form, settings):
     settings.MAX_DRAFTS_PER_NETWORK = 1
-    assert Client().get("/forms/test/").status_code == 200
+    assert Client().get("/f/test/").status_code == 200
     DraftAdmission.objects.update(window_start=timezone.now() - timedelta(hours=25))
-    assert Client().get("/forms/test/").status_code == 200
+    assert Client().get("/f/test/").status_code == 200
     assert DraftAdmission.objects.get().count == 1
     DraftAdmission.objects.update(window_start=timezone.now() - timedelta(days=3))
     cleanup(execute=True)
     assert not DraftAdmission.objects.exists()
 
 
-def test_full_capacity_rejects_before_creating_another_session(event, settings):
+def test_full_capacity_rejects_before_creating_another_session(form, settings):
     settings.MAX_ACTIVE_DRAFTS = 1
-    assert Client().get("/forms/test/").status_code == 200
-    assert Client().get("/forms/test/").status_code == 503
+    assert Client().get("/f/test/").status_code == 200
+    assert Client().get("/f/test/").status_code == 503
     assert Session.objects.count() == 1
 
 

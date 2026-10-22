@@ -1,5 +1,4 @@
-# Shared backend. Deploy once, then use compose.coolify.web.yaml per domain.
-# Create the external shared network and private volume on the Docker host first.
+# The whole application as one Coolify resource: web, worker, ClamAV and migrations.
 # PostgreSQL is a separate Coolify resource; start it before deploying this stack.
 # Enable Connect To Predefined Network to reach its internal DATABASE_URL.
 x-application: &application
@@ -9,12 +8,12 @@ x-application: &application
   restart: unless-stopped
   pids_limit: 64
   mem_limit: 512m
-  environment: &application-environment
+  environment:
     DJANGO_DEBUG: "0"
-    PORTAL_ROLE: worker
     DEPLOYMENT_ENV: ${DEPLOYMENT_ENV:-production}
     DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set a random secret of at least 50 characters}
     ALLOWED_HOSTS: ${ALLOWED_HOSTS:?Include the public hostname and 127.0.0.1}
+    CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:?Set the public HTTPS origin}
     DATABASE_URL: ${DATABASE_URL:?Use the separate PostgreSQL resource internal URL}
     PRIVATE_STORAGE_ROOT: /app/var/private
     TRUST_PROXY_HEADERS: "1"
@@ -22,6 +21,10 @@ x-application: &application
     DOCUMENT_SANDBOX_ENABLED: "1"
     REQUIRE_WORKER_HEARTBEAT: "1"
     HEALTHCHECK_TOKEN: ${HEALTHCHECK_TOKEN:?Set a random health check token}
+    OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?Set the PT Login client ID}
+    OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?Set the PT Login client secret}
+    KEYCLOAK_ADMIN_GROUP: ${KEYCLOAK_ADMIN_GROUP:-/projecttogether/tools/reimbursement-portal-admins}
+    KEYCLOAK_EDITOR_GROUP: ${KEYCLOAK_EDITOR_GROUP:-/projecttogether/tools/reimbursement-portal}
     MAIL_DELIVERY_MODE: mailersend
     MAILERSEND_API_TOKEN: ${MAILERSEND_API_TOKEN:?Set the MailerSend API token}
     MAILERSEND_WEBHOOK_SIGNING_SECRET: ${MAILERSEND_WEBHOOK_SIGNING_SECRET:?Set the webhook signing secret}
@@ -30,10 +33,10 @@ x-application: &application
     APPROVED_DELIVERY_RECIPIENTS: ${APPROVED_DELIVERY_RECIPIENTS:?Set the approved Moss or Finance inboxes}
     TEST_RECIPIENT_ALLOWLIST: ${TEST_RECIPIENT_ALLOWLIST:-}
     UPLOAD_SCANNER: clamav
-    CLAMAV_HOST: ${CLAMAV_HOST:-pt-reimbursement-scanner}
+    CLAMAV_HOST: scanner
     CLAMAV_PORT: "3310"
     MAX_ACTIVE_DRAFTS: ${MAX_ACTIVE_DRAFTS:-1000}
-    TOTAL_WEB_WORKERS: ${TOTAL_WEB_WORKERS:-4}
+    TOTAL_WEB_WORKERS: ${TOTAL_WEB_WORKERS:-2}
     MAX_DRAFTS_PER_NETWORK: ${MAX_DRAFTS_PER_NETWORK:-300}
     MAX_UPLOADS_PER_NETWORK: ${MAX_UPLOADS_PER_NETWORK:-60000}
     MAX_UPLOADS_PER_NETWORK_PER_MINUTE: ${MAX_UPLOADS_PER_NETWORK_PER_MINUTE:-3000}
@@ -44,13 +47,12 @@ x-application: &application
     MIN_FREE_STORAGE_BYTES: ${MIN_FREE_STORAGE_BYTES:-1000000000}
     JOB_TIMEOUT_SECONDS: ${JOB_TIMEOUT_SECONDS:-240}
     CONTENT_PURGE_ENABLED: ${CONTENT_PURGE_ENABLED:-0}
-    SUCCESS_RETENTION_DAYS: ${SUCCESS_RETENTION_DAYS:-7}
+    PDF_RETENTION_DAYS: ${PDF_RETENTION_DAYS:-7}
+    CONTENT_RETENTION_DAYS: ${CONTENT_RETENTION_DAYS:-30}
   volumes:
     - private_data:/app/var/private
   tmpfs:
     - /app/var/private/work:size=700m,mode=0700,uid=10001,gid=10001
-  networks:
-    - shared
 
 x-dependencies: &dependencies
   scanner:
@@ -67,11 +69,8 @@ services:
     restart: "no"
     exclude_from_hc: true
 
-  webhook:
+  web:
     <<: *application
-    environment:
-      <<: *application-environment
-      PORTAL_ROLE: webhook
     expose:
       - "8000"
     depends_on: *dependencies
@@ -107,18 +106,7 @@ services:
       start_period: 180s
       timeout: 10s
       retries: 5
-    networks:
-      shared:
-        aliases:
-          - ${CLAMAV_HOST:-pt-reimbursement-scanner}
 
 volumes:
   private_data:
-    external: true
-    name: ${PRIVATE_DATA_VOLUME:-pt-reimbursement-private}
   scanner_data:
-
-networks:
-  shared:
-    external: true
-    name: ${SHARED_NETWORK:-pt-reimbursement-shared}

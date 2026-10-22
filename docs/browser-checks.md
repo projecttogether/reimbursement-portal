@@ -1,15 +1,18 @@
 # Participant browser verification
 
-Use the local demo event, local email delivery, and synthetic receipts/signatures.
+Use the local demo form, local email delivery, and synthetic receipts/signatures.
 Run the worker alongside the web application. Never use production receipts.
 
-1. Open `/forms/demo/` at a desktop width and a 390-pixel mobile width. Check that
-   fields, expense cards, buttons, and totals fit without horizontal scrolling.
-2. Fill name, international multiline address, email, test IBAN
-   `DE89370400440532013000`, statutory-purpose explanation, place, and trip dates.
-3. Add two positions, each with merchant, purpose, receipt reference, and amount.
-   Enter `10,10` and `20,20`; confirm a `30,30 EUR` total. Duplicate references
-   should warn without blocking submission.
+1. Open `/f/demo/` at a desktop width and a 390-pixel mobile width. Check that
+   fields, expense cards, buttons, and totals fit without horizontal scrolling,
+   and that filled fields share one font weight.
+2. Fill name, address, country, email, test IBAN `DE89370400440532013000`, and
+   check that the account holder follows the name. Choose a purpose option, tick
+   the trip checkbox and enter destination and trip dates.
+3. Add two positions, each with merchant, purpose, optional receipt reference, and
+   amount in euros. Enter `10,10` and `20,20`; confirm a `30,30 €` total. Add a
+   mileage position with 100 km and return trip and confirm `60,00 €`. Duplicate
+   references should warn without blocking submission.
 4. Upload mixed JPG/PNG/PDF receipts, including a multipage PDF. Wait for validation.
    Move rows and receipt files. Confirm the file ownership and displayed order.
 5. Try invalid amounts, missing fields, missing receipts, and an empty signature.
@@ -18,8 +21,9 @@ Run the worker alongside the web application. Never use production receipts.
 6. Review every value, acknowledge the declaration/privacy notice, and upload a
    synthetic signature. Also verify drawing with mouse or touch. Returning to edit
    must clear both signature and declaration before another review.
-7. Submit once and try a double click. The receipt page must show one reference,
-   processing progress, and no banking details. Reload it and confirm the reference
+7. Submit once and try a double click. The receipt page must say
+   "Dein Antrag wurde eingereicht", show one reference, processing progress, and
+   no banking details. Opening the form link again starts a new, empty claim. Reload it and confirm the reference
    remains the same. Another browser session must receive a 404 for that page.
 8. Inspect the private local `.eml` attachment. Check summary fields, signature,
    exact totals, page completeness, row/file order, PDF bookmarks, and readability.

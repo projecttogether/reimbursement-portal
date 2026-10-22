@@ -240,14 +240,10 @@ small,
 .field-error:empty {
   display: none;
 }
-.date-pair,
-.amount-pair {
+.date-pair {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
-}
-.amount-pair {
-  grid-template-columns: 1.5fr 1fr;
 }
 .trip-fields {
   margin-top: 20px;
@@ -553,13 +549,6 @@ button:disabled {
   border-top: 1px solid var(--line);
   padding: 13px 0;
 }
-.event-list a {
-  display: flex;
-  justify-content: space-between;
-  padding: 20px 0;
-  text-decoration: none;
-  border-bottom: 1px solid var(--line);
-}
 footer {
   max-width: 960px;
   padding: 25px 28px 35px;
@@ -681,5 +670,103 @@ footer {
   }
   #review-content dd {
     margin-bottom: 10px;
+  }
+}
+/* Inputs nested in their label keep the normal weight of other filled fields. */
+.field label input,
+.field label select,
+.field label textarea {
+  display: block;
+  margin-top: 7px;
+  font-weight: 400;
+}
+.field label.check-label {
+  font-weight: 400;
+}
+.field .check-label input {
+  display: inline-block;
+  width: 18px;
+  margin-top: 2px;
+  padding: 0;
+}
+.inline-check {
+  margin: 30px 0 4px;
+}
+.postal-pair {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 12px;
+}
+.notice {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--sky);
+  padding: 15px 20px;
+  border-radius: 8px;
+  margin-bottom: 26px;
+  font-size: 14px;
+}
+.instructions p {
+  margin: 0;
+}
+.instructions p + p {
+  margin-top: 10px;
+}
+.choice-list {
+  border: 0;
+  padding: 0;
+  margin: 0 0 20px;
+}
+.choice-list legend {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.choice-list .check-label {
+  margin: 12px 0;
+}
+#trip-hint:empty {
+  display: none;
+}
+.add-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.review-title {
+  font-weight: 600;
+  margin: 0;
+}
+.privacy details {
+  margin: 12px 0;
+  font-size: 13px;
+}
+.privacy summary {
+  cursor: pointer;
+  color: var(--ocean);
+}
+.privacy-text {
+  max-height: 340px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 18px;
+  margin-top: 10px;
+}
+.privacy-text h3,
+.privacy-page h3 {
+  font-size: 15px;
+  margin-top: 18px;
+}
+.privacy-page h3:first-child {
+  font-size: 28px;
+  margin-top: 0;
+}
+footer a {
+  color: inherit;
+}
+@media (max-width: 700px) {
+  .postal-pair {
+    grid-template-columns: 1fr 1.5fr;
   }
 }

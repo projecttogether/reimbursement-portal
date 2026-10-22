@@ -1,3 +1,9 @@
 from django.urls import include, path
 
-urlpatterns = [path("", include("portal.urls"))]
+from portal.admin import site
+
+urlpatterns = [
+    path("admin/", site.urls),
+    path("oidc/", include("mozilla_django_oidc.urls")),
+    path("", include("portal.urls")),
+]

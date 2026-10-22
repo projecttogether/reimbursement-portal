@@ -29,17 +29,20 @@ fs.mkdirSync(output, { recursive: true });
   const references = [];
   try {
     for (const signatureMode of ["draw", "upload"]) {
-      await page.goto(`${base}/forms/demo/?new=1`);
+      await page.goto(`${base}/f/demo/`);
       await page.locator("#id_full_name").fill("Alex Beispiel");
-      await page
-        .locator("#id_postal_address")
-        .fill("Teststraße 1\n12345 Berlin\nDeutschland");
+      assert.equal(
+        await page.locator("#id_account_holder").inputValue(),
+        "Alex Beispiel",
+      );
+      await page.locator("#id_street").fill("Teststraße 1");
+      await page.locator("#id_postal_code").fill("12345");
+      await page.locator("#id_city").fill("Berlin");
       await page.locator("#id_email").fill("participant@example.invalid");
       await page.locator("#id_iban").fill("DE89370400440532013000");
-      await page
-        .locator("#id_purpose")
-        .fill("Teilnahme am synthetischen ProjectTogether Workshop.");
-      await page.locator("#id_trip_location").fill("Berlin");
+      await page.locator("#id_purpose_0").check();
+      await page.locator("#id_is_trip").check();
+      await page.locator("#id_trip_destination").fill("Berlin");
       await page.locator("#id_trip_start").fill("2026-10-20");
       await page.locator("#id_trip_end").fill("2026-10-21");
       for (const [index, merchant, amount, file] of [
@@ -166,7 +169,7 @@ fs.mkdirSync(output, { recursive: true });
         () =>
           document
             .getElementById("processing-status")
-            .textContent.includes("zugestellt"),
+            .textContent.includes("wurde an Finance übermittelt"),
         null,
         { timeout: 60000 },
       );

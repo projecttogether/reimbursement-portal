@@ -6,14 +6,24 @@ from settings; every message that quotes a limit is rendered from the same value
 
 import re
 from dataclasses import asdict, dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
 
-CURRENCY_PRECISION = {"EUR": 2, "CHF": 2, "GBP": 2, "USD": 2, "JPY": 0}
-# Whole units up to nine digits, an optional decimal comma or point, no grouping.
+# Amounts are always EUR. Whole euros up to nine digits, an optional decimal comma or
+# point with at most two cent digits, no grouping.
 AMOUNT_PATTERN = r"\d{1,9}(?:[,.]\d{1,2})?"
-EXPENSE_FIELD_LENGTHS = {"merchant": 200, "purpose": 500, "receipt_reference": 100}
+EXPENSE_FIELD_LENGTHS = {
+    "merchant": 200,
+    "purpose": 500,
+    "receipt_reference": 100,
+    "route_from": 200,
+    "route_to": 200,
+}
+# Kilometres of one mileage row, one way.
+MAX_DISTANCE_KM = 5000
+# The largest claim total the database stores (Claim.total, 12 digits).
+MAX_CLAIM_TOTAL = Decimal("9999999999.99")
 # Signature attempts kept per draft, independent of the expense rows.
 MAX_SIGNATURE_FILES = 3
 RECEIPT_EXTENSIONS = frozenset({".pdf", ".png", ".jpg", ".jpeg"})
@@ -95,6 +105,7 @@ def messages():
         ),
         "expense_count": f"Bitte füge 1 bis {current.expenses} Auslagenpositionen hinzu.",
         "files_per_expense": f"Jede Position benötigt 1 bis {current.files_per_expense} Belegdateien.",
+        "mileage_files": f"Für Kilometer sind höchstens {current.files_per_expense} Nachweise erlaubt.",
         "files_per_expense_exceeded": (
             f"Pro Position sind höchstens {current.files_per_expense} Belegdateien erlaubt."
         ),
@@ -118,22 +129,39 @@ def message(code, default=None):
     return messages().get(code, default)
 
 
-def client_config(currencies):
+def client_config():
     """Everything the form script needs to apply the same limits and formats."""
     return {
         "limits": asdict(limits()),
         "amount_pattern": AMOUNT_PATTERN,
-        "currency_precision": {code: CURRENCY_PRECISION[code] for code in currencies},
+        "max_distance_km": MAX_DISTANCE_KM,
         "messages": messages(),
     }
 
 
-def parse_amount(value, currency):
-    """An exact positive Decimal in the currency's precision, or ValueError."""
+def parse_amount(value):
+    """An exact positive EUR Decimal with at most two cent digits, or ValueError."""
     if not isinstance(value, str) or not re.fullmatch(AMOUNT_PATTERN, value.strip()):
-        raise ValueError("Betrag ohne Tausendertrennzeichen eingeben, z. B. 12,50.")
+        raise ValueError("Betrag in Euro ohne Tausendertrennzeichen eingeben, z. B. 12,50.")
     amount = Decimal(value.strip().replace(",", "."))
-    precision = CURRENCY_PRECISION.get(currency)
-    if precision is None or -amount.as_tuple().exponent > precision or amount <= 0:
-        raise ValueError("Bitte gib einen positiven Betrag mit passender Währungsgenauigkeit ein.")
+    if amount <= 0:
+        raise ValueError("Bitte gib einen positiven Betrag ein.")
     return amount
+
+
+def parse_distance(value):
+    """Whole kilometres of one way, 1 to MAX_DISTANCE_KM, or ValueError."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        value = str(value)
+    if not isinstance(value, str) or not re.fullmatch(r"\d{1,5}", value.strip()):
+        raise ValueError("Bitte gib die Entfernung in ganzen Kilometern ein.")
+    distance = int(value.strip())
+    if not 1 <= distance <= MAX_DISTANCE_KM:
+        raise ValueError(f"Die Entfernung muss zwischen 1 und {MAX_DISTANCE_KM} km liegen.")
+    return distance
+
+
+def mileage_amount(distance_km, round_trip, rate):
+    """The exact EUR amount of a mileage row, rounded half up to cents."""
+    kilometres = distance_km * (2 if round_trip else 1)
+    return (Decimal(kilometres) * Decimal(rate)).quantize(Decimal("0.01"), ROUND_HALF_UP)

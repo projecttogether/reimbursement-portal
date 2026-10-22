@@ -20,7 +20,7 @@ def test_racing_submissions_create_one_claim(prepared):
             client = Client()
             client.cookies = cookies.copy()
             return client.post(
-                "/forms/test/submit/",
+                "/f/test/submit/",
                 data=json.dumps(prepared["data"]),
                 content_type="application/json",
             )
@@ -36,7 +36,7 @@ def test_racing_submissions_create_one_claim(prepared):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_concurrent_fresh_sessions_share_one_creation_budget(event, settings):
+def test_concurrent_fresh_sessions_share_one_creation_budget(form, settings):
     if connection.vendor != "postgresql":
         pytest.skip("Row-lock behavior requires PostgreSQL.")
     settings.MAX_DRAFTS_PER_NETWORK = 1
@@ -44,7 +44,7 @@ def test_concurrent_fresh_sessions_share_one_creation_budget(event, settings):
     def open_form(_):
         close_old_connections()
         try:
-            return Client().get("/forms/test/").status_code
+            return Client().get("/f/test/").status_code
         finally:
             connections.close_all()
 

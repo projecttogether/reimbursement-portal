@@ -19,6 +19,8 @@ environment = os.environ | {
     "APPROVED_DELIVERY_RECIPIENTS": "ci@example.invalid",
     "TEST_RECIPIENT_ALLOWLIST": "ci@example.invalid",
     "HEALTHCHECK_TOKEN": "ci-only",
+    "OIDC_CLIENT_ID": "ci-only",
+    "OIDC_CLIENT_SECRET": "ci-only-never-sent",
     "UPLOAD_SCANNER": "clamav",
     "MAIL_DELIVERY_MODE": "mailersend",
     "REQUIRE_WORKER_HEARTBEAT": "1",

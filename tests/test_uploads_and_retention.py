@@ -25,7 +25,7 @@ def test_real_upload_is_validated_asynchronously(prepared, uploaded_file):
         "expense_id": prepared["data"]["expenses"][0]["id"],
         "file": uploaded_file,
     }
-    response = prepared["client"].post("/forms/test/uploads/", data)
+    response = prepared["client"].post("/f/test/uploads/", data)
     assert response.status_code == 202, response.content
     result = response.json()
     upload = Upload.objects.get(pk=result["id"])
@@ -44,7 +44,7 @@ def test_camera_jpeg_with_auxiliary_picture_is_normalized(prepared, kind):
         assert source.format == "MPO" and source.n_frames == 2
         assert source.getexif()[274] == 6
     response = prepared["client"].post(
-        "/forms/test/uploads/",
+        "/f/test/uploads/",
         {
             "draft_id": str(prepared["draft"].id),
             "token": prepared["data"]["token"],
@@ -74,7 +74,7 @@ def test_scanner_failure_keeps_file_pending(prepared, uploaded_file, settings):
         unused.bind(("127.0.0.1", 0))
         settings.CLAMAV_PORT = unused.getsockname()[1]
     response = prepared["client"].post(
-        "/forms/test/uploads/",
+        "/f/test/uploads/",
         {
             "draft_id": str(prepared["draft"].id),
             "token": prepared["data"]["token"],
@@ -92,7 +92,7 @@ def test_scanner_failure_keeps_file_pending(prepared, uploaded_file, settings):
 
 def test_original_single_file_limit_is_enforced(prepared):
     response = prepared["client"].post(
-        "/forms/test/uploads/",
+        "/f/test/uploads/",
         {
             "draft_id": str(prepared["draft"].id),
             "token": prepared["data"]["token"],
@@ -107,7 +107,7 @@ def test_original_single_file_limit_is_enforced(prepared):
 
 def test_spoofed_image_never_becomes_ready(prepared):
     response = prepared["client"].post(
-        "/forms/test/uploads/",
+        "/f/test/uploads/",
         {
             "draft_id": str(prepared["draft"].id),
             "token": prepared["data"]["token"],
@@ -133,7 +133,8 @@ def test_purge_removes_all_sensitive_fields_and_files(accepted):
     assert accepted.state == "purged"
     assert all(not path.exists() for path in files)
     assert not accepted.iban and not accepted.email and not accepted.purpose
-    assert accepted.snapshot == {} and accepted.totals == {}
+    assert accepted.snapshot == {} and accepted.total is None
+    assert not accepted.street and not accepted.account_holder
     assert not accepted.expenses.exists() and not accepted.uploads.exists()
     assert accepted.delivery.recipient == ""
     assert not accepted.delivery.attempts.exists()
@@ -232,14 +233,12 @@ def test_public_health_requires_deployment_token(client, settings):
 def test_uploads_and_submission_share_the_editable_draft_rule(
     prepared, uploaded_file, change, message
 ):
-    event = prepared["event"]
+    form = prepared["form"]
     if change == "closed":
-        event.active = False
-    else:
-        event.config_version += 1
-    event.save()
+        form.active = False
+    form.save()
     upload = prepared["client"].post(
-        "/forms/test/uploads/",
+        "/f/test/uploads/",
         {
             "draft_id": str(prepared["draft"].id),
             "token": prepared["data"]["token"],
@@ -249,7 +248,7 @@ def test_uploads_and_submission_share_the_editable_draft_rule(
         },
     )
     submit = prepared["client"].post(
-        "/forms/test/submit/", data=prepared["data"], content_type="application/json"
+        "/f/test/submit/", data=prepared["data"], content_type="application/json"
     )
     for response in [upload, submit]:
         assert response.status_code == 409

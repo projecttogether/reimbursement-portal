@@ -1,5 +1,7 @@
 # PT Reimbursement Portal implementation plan
 
+Status note (2026-10-21): the MVP below has since been extended with one web service for all forms, an admin area with PT Login, templates and forms, mileage reimbursement and EUR-only amounts. See `CONTEXT.md` and `docs/coolify.md` for the current design; this file records the original MVP plan.
+
 Status: MVP implemented and verified locally on 2026-10-20. PostgreSQL integration tests, desktop/mobile browser flows, both signature paths, PDF page-content/order checks, local email attachment verification, and the production image build pass. Production configuration and the real MailerSend/Moss route smoke test remain release requirements.
 
 ## Confirmed MVP

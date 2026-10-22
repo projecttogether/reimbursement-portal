@@ -15,7 +15,7 @@ from django.utils import timezone
 
 from portal import intake
 from portal.intake import IntakeError
-from portal.models import Draft, Event, Job, Upload
+from portal.models import Draft, Form, Job, Upload
 from portal.services import queue
 from portal.services.capacity import CapacityError, admit_upload, release_upload
 from portal.services.drafts import authorize_draft, ensure_accepting, session_hash
@@ -39,7 +39,7 @@ def remove_files(upload):
     remove_keys(upload.source_key, upload.normalized_key)
 
 
-def accept(request, event_slug, *, file, kind, expense_id, draft_id, token):
+def accept(request, form_slug, *, file, kind, expense_id, draft_id, token):
     """Store a source file for an editable draft and queue its validation."""
     if kind not in {"receipt", "signature"} or not file:
         raise IntakeError("Bitte wähle eine Belegdatei oder Unterschrift aus.")
@@ -56,9 +56,9 @@ def accept(request, event_slug, *, file, kind, expense_id, draft_id, token):
     key = ""
     try:
         with transaction.atomic():
-            draft = authorize_draft(request, draft_id, token, event_slug, lock=True)
+            draft = authorize_draft(request, draft_id, token, form_slug, lock=True)
             ensure_accepting(
-                draft, Event.objects.get(pk=draft.event_id), form_version=draft.config_version
+                draft, Form.objects.get(pk=draft.form_id), form_version=draft.config_version
             )
             count = draft.uploads.filter(kind=kind, expense_id=expense_id).count()
             if (
@@ -114,12 +114,12 @@ def _receipt_bytes(draft):
     return draft.uploads.filter(kind="receipt").aggregate(total=Sum("size"))["total"] or 0
 
 
-def owned(request, event_slug, upload_id):
+def owned(request, form_slug, upload_id):
     """The upload, if this session's unexpired draft owns it; otherwise 404."""
     return get_object_or_404(
         Upload,
         pk=upload_id,
-        draft__event__slug=event_slug,
+        draft__form__slug=form_slug,
         draft__session_hash=session_hash(request),
         draft__expires_at__gt=timezone.now(),
     )
@@ -137,8 +137,8 @@ def status(upload):
 
 
 @transaction.atomic
-def discard(request, event_slug, upload_id):
-    upload = owned(request, event_slug, upload_id)
+def discard(request, form_slug, upload_id):
+    upload = owned(request, form_slug, upload_id)
     draft = Draft.objects.select_for_update().get(pk=upload.draft_id)
     if draft.claim_id or upload.claim_id:
         raise IntakeError("Eingereichte Belege können nicht geändert werden.", status=409)

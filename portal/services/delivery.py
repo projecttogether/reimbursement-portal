@@ -107,12 +107,13 @@ def refresh(delivery):
     claim = Claim.objects.select_for_update().get(pk=delivery.claim_id)
     if current.state == DELIVERED:
         delivery.delivered_at = delivery.delivered_at or timezone.now()
-        claim.retention_due = delivery.delivered_at + timedelta(
-            days=settings.SUCCESS_RETENTION_DAYS
+        claim.pdf_due = delivery.delivered_at + timedelta(days=settings.PDF_RETENTION_DAYS)
+        claim.retention_due = max(
+            claim.submitted_at + timedelta(days=settings.CONTENT_RETENTION_DAYS), claim.pdf_due
         )
     elif current.state in {FAILED, UNKNOWN}:
-        claim.retention_due = None
-    claim.save(update_fields=["retention_due"])
+        claim.pdf_due = claim.retention_due = None
+    claim.save(update_fields=["pdf_due", "retention_due"])
     delivery.save()
 
 
@@ -151,7 +152,7 @@ def compose(attempt):
         recipient=delivery.recipient,
         subject=f"Erstattungsantrag {claim.reference} | {claim.snapshot['name']}",
         text=(
-            f"Erstattungsantrag {claim.reference}\nVeranstaltung: {claim.snapshot['name']}\n\n"
+            f"Erstattungsantrag {claim.reference}\nFormular: {claim.snapshot['name']}\n\n"
             "Das vollständige Erstattungsformular und alle Belege sind in der beigefügten PDF "
             "enthalten.\n"
         ),

@@ -191,8 +191,8 @@ def test_unmatched_event_batches_do_not_starve_later_matches(accepted):
     assert known.applied
 
 
-def test_claim_status_streams_beyond_100_without_n_plus_one(event, django_assert_num_queries):
-    Claim.objects.bulk_create([Claim(event=event, snapshot={}) for _ in range(101)])
+def test_claim_status_streams_beyond_100_without_n_plus_one(form, django_assert_num_queries):
+    Claim.objects.bulk_create([Claim(form=form, snapshot={}) for _ in range(101)])
     output = io.StringIO()
     with django_assert_num_queries(4):
         call_command("claim_status", stdout=output)

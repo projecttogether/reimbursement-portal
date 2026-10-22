@@ -13,6 +13,8 @@
   const context = canvas.getContext("2d");
   const signatureStatus = document.getElementById("signature-status");
   const rows = [];
+  const tripFields = document.getElementById("trip-fields");
+  const isTrip = form.elements.namedItem("is_trip");
   let signature = null,
     signatureBusy = false,
     hasInk = false,
@@ -26,6 +28,11 @@
     if (className) element.className = className;
     return element;
   }
+  // The named input, or the first radio button of a group.
+  function fieldElement(name) {
+    const element = form.elements.namedItem(name);
+    return element instanceof RadioNodeList ? element[0] : element;
+  }
   function showError(message, fields = {}) {
     const messages = Object.values(fields)
       .flat()
@@ -36,7 +43,7 @@
       const target = document.getElementById(`error-${name}`);
       if (target)
         target.textContent = errors.map((error) => error.message).join(" ");
-      form.elements.namedItem(name)?.setAttribute("aria-invalid", "true");
+      fieldElement(name)?.setAttribute("aria-invalid", "true");
     }
     const invalid = form.querySelector('[aria-invalid="true"]');
     if (invalid && invalid.getClientRects().length) invalid.focus();
@@ -95,45 +102,53 @@
     return result;
   }
   const amountFormat = new RegExp(`^(?:${config.amount_pattern})$`);
-  function precision(currency) {
-    return config.currency_precision[currency] ?? 2;
-  }
-  function money(amount, currency) {
+  function money(cents) {
     return new Intl.NumberFormat("de-DE", {
       style: "currency",
-      currency,
-      minimumFractionDigits: precision(currency),
-      maximumFractionDigits: precision(currency),
-    }).format(Number(amount) / 10 ** precision(currency));
+      currency: "EUR",
+    }).format(Number(cents) / 100);
   }
-  // Exact amount in the currency's minor units, or null when the server would reject it.
-  function minorUnits(value, currency) {
+  // An exact EUR amount in cents, or null when the server would reject it.
+  function cents(value) {
     if (!amountFormat.test(value.trim())) return null;
     const [whole, fraction = ""] = value.trim().replace(",", ".").split(".");
-    const digits = precision(currency);
-    if (fraction.length > digits) return null;
-    return (
-      BigInt(whole) * 10n ** BigInt(digits) +
-      BigInt(fraction.padEnd(digits, "0") || "0")
-    );
+    return BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0") || "0");
   }
+  const rateCents = config.mileage_rate ? cents(config.mileage_rate) : null;
   function rowData(row) {
     return Object.fromEntries(
       [...row.element.querySelectorAll("[data-field]")].map((element) => [
         element.dataset.field,
-        element.value,
+        element.type === "checkbox" ? element.checked : element.value,
       ]),
     );
   }
+  // The row's amount in cents; mileage is distance × rate, as on the server.
+  function rowAmount(row) {
+    const data = rowData(row);
+    if (row.kind !== "mileage") return cents(data.amount);
+    const distance = data.distance_km.trim();
+    if (!/^\d{1,5}$/.test(distance)) return null;
+    const kilometres = BigInt(distance);
+    if (kilometres < 1n || kilometres > BigInt(config.max_distance_km))
+      return null;
+    return kilometres * (data.round_trip ? 2n : 1n) * rateCents;
+  }
   function updateTotals() {
-    const totals = {};
+    let total = 0n;
     const references = new Set();
     let duplicate = false;
     rows.forEach((row) => {
       const data = rowData(row),
-        amount = minorUnits(data.amount, data.currency);
-      if (amount !== null)
-        totals[data.currency] = (totals[data.currency] || 0n) + amount;
+        amount = rowAmount(row);
+      if (amount !== null) total += amount;
+      if (row.kind === "mileage") {
+        row.element.querySelector(".mileage-amount").textContent =
+          amount === null
+            ? ""
+            : `${data.round_trip ? Number(data.distance_km) * 2 : data.distance_km} km × ${money(rateCents)} = ${money(amount)}`;
+        return;
+      }
       const reference = data.receipt_reference
         .trim()
         .toLocaleLowerCase("de-DE");
@@ -142,16 +157,9 @@
     });
     const target = document.getElementById("totals");
     target.replaceChildren();
-    for (const [currency, total] of Object.entries(totals)) {
-      const line = node("div");
-      line.append(
-        node("span", "Summe", "total-caption"),
-        node("span", money(total, currency)),
-      );
-      target.append(line);
-    }
-    if (!Object.keys(totals).length)
-      target.append(node("span", money(0n, config.currencies[0])));
+    const line = node("div");
+    line.append(node("span", "Summe", "total-caption"), node("span", money(total)));
+    target.append(line);
     if (duplicate)
       target.append(
         node(
@@ -160,8 +168,30 @@
           "muted",
         ),
       );
-    return totals;
+    return total;
   }
+  function updateTravel() {
+    if (!tripFields) return;
+    const hasMileage = rows.some((row) => row.kind === "mileage");
+    if (isTrip) {
+      if (hasMileage) isTrip.checked = true;
+      isTrip.disabled = hasMileage;
+    }
+    const needed = config.travel === "required" || hasMileage || isTrip?.checked;
+    tripFields.hidden = !needed;
+    for (const name of ["trip_destination", "trip_start", "trip_end"])
+      form.elements.namedItem(name).required = needed;
+  }
+  isTrip?.addEventListener("change", updateTravel);
+  const fullName = form.elements.namedItem("full_name");
+  const accountHolder = form.elements.namedItem("account_holder");
+  let accountHolderEdited = false;
+  fullName.addEventListener("input", () => {
+    if (!accountHolderEdited) accountHolder.value = fullName.value;
+  });
+  accountHolder.addEventListener("input", () => {
+    accountHolderEdited = accountHolder.value !== "";
+  });
   function arrangeRows() {
     rows.forEach((row, index) => {
       expensesContainer.append(row.element);
@@ -172,9 +202,12 @@
       row.element.querySelector('[data-action="remove"]').disabled =
         rows.length === 1;
     });
-    document.getElementById("add-expense").disabled =
-      rows.length >= config.limits.expenses;
+    for (const id of ["add-expense", "add-mileage"]) {
+      const button = document.getElementById(id);
+      if (button) button.disabled = rows.length >= config.limits.expenses;
+    }
     updateTotals();
+    updateTravel();
   }
   function renderFiles(row) {
     const list = row.element.querySelector(".file-list");
@@ -257,6 +290,8 @@
     });
   }
   async function uploadFile(blob, kind, expenseId, onUpdate) {
+    if (config.preview)
+      throw new Error("Vorschau: Hochladen ist nicht möglich.");
     const data = new FormData();
     for (const [key, value] of Object.entries({
       draft_id: config.draft_id,
@@ -332,21 +367,12 @@
     onUpdate?.(delayed);
     return delayed;
   }
-  function addRow() {
+  function addRow(kind = "receipt") {
     if (rows.length >= config.limits.expenses) return;
     const element = document
-      .getElementById("expense-template")
+      .getElementById(kind === "mileage" ? "mileage-template" : "expense-template")
       .content.firstElementChild.cloneNode(true);
-    const row = { id: crypto.randomUUID(), files: [], element };
-    element.querySelector('[data-field="receipt_reference"]').value = String(
-      rows.length + 1,
-    );
-    const currency = element.querySelector('[data-field="currency"]');
-    config.currencies.forEach((code) => {
-      const option = node("option", code);
-      option.value = code;
-      currency.append(option);
-    });
+    const row = { id: crypto.randomUUID(), kind, files: [], element };
     element.addEventListener("input", updateTotals);
     element.querySelectorAll("[data-action]").forEach((button) =>
       button.addEventListener("click", () => {
@@ -423,7 +449,12 @@
     rows.push(row);
     arrangeRows();
   }
-  document.getElementById("add-expense").addEventListener("click", addRow);
+  document
+    .getElementById("add-expense")
+    .addEventListener("click", () => addRow("receipt"));
+  document
+    .getElementById("add-mileage")
+    ?.addEventListener("click", () => addRow("mileage"));
   addRow();
 
   async function discardSignature() {
@@ -581,22 +612,40 @@
     if (
       rows.some(
         (row) =>
-          !row.files.length || row.files.some((file) => file.state !== "ready"),
+          (row.kind !== "mileage" && !row.files.length) ||
+          row.files.some((file) => file.state !== "ready"),
       )
     ) {
       showError(
-        "Jede Position benötigt mindestens einen vollständig geprüften Beleg.",
+        "Jede Auslage benötigt mindestens einen Beleg, und alle Dateien müssen geprüft sein.",
       );
       return;
     }
     if (
       rows.some((row) => {
-        const data = rowData(row);
-        const amount = minorUnits(data.amount, data.currency);
+        const amount = rowAmount(row);
         return amount === null || amount <= 0n;
       })
     ) {
-      showError("Bitte gib für jede Position einen positiven Betrag ein.");
+      showError(
+        "Bitte gib für jede Position einen positiven Betrag in Euro bzw. eine Entfernung in ganzen Kilometern ein.",
+      );
+      return;
+    }
+    const iban = form.elements.namedItem("iban").value.replace(/\s/g, "");
+    if (
+      iban.length > 2 &&
+      !config.sepa_countries.includes(iban.slice(0, 2).toUpperCase()) &&
+      !form.elements.namedItem("bic").value.trim()
+    ) {
+      showError("Bitte prüfe die markierten Angaben.", {
+        bic: [
+          {
+            message:
+              "Für Konten außerhalb des SEPA-Raums ist die BIC erforderlich.",
+          },
+        ],
+      });
       return;
     }
     if (
@@ -611,35 +660,65 @@
     const content = document.getElementById("review-content");
     content.replaceChildren();
     const descriptions = node("dl");
+    const travel = tripFields && !tripFields.hidden;
     for (const [name, label] of [
       ["full_name", "Name"],
       ["email", "E-Mail"],
-      ["postal_address", "Anschrift"],
+      ["street", "Straße und Hausnummer"],
+      ["postal_code", "PLZ"],
+      ["city", "Ort"],
+      ["country", "Land"],
+      ["account_holder", "Kontoinhaber:in"],
       ["iban", "IBAN"],
+      ["bic", "BIC"],
       ["purpose", "Erläuterung"],
-      ["trip_location", "Reiseort"],
+      ["purpose_details", "Ergänzung"],
+      ["trip_destination", "Zielort"],
       ["trip_start", "Reisebeginn"],
       ["trip_end", "Reiseende"],
     ]) {
-      const value = form.elements.namedItem(name)?.value;
+      if (name.startsWith("trip_") && !travel) continue;
+      const element = form.elements.namedItem(name);
+      const value =
+        element instanceof HTMLSelectElement
+          ? element.selectedOptions[0]?.text
+          : element?.type === "date"
+            ? element.value.split("-").reverse().join(".")
+            : element?.value;
       if (value) descriptions.append(node("dt", label), node("dd", value));
     }
     content.append(descriptions);
     rows.forEach((row, index) => {
       const data = rowData(row),
         item = node("div", undefined, "review-expense");
-      item.append(
-        node(
-          "strong",
-          `${index + 1}. ${data.merchant} · ${money(minorUnits(data.amount, data.currency), data.currency)}`,
-        ),
-        node("p", `${data.purpose} · Referenz ${data.receipt_reference}`),
-        node("small", row.files.map((file) => file.name).join(" · ")),
-      );
+      const amount = money(rowAmount(row));
+      if (row.kind === "mileage")
+        item.append(
+          node(
+            "p",
+            `${index + 1}. Fahrt ${data.route_from} – ${data.route_to}${data.round_trip ? " und zurück" : ""} · ${amount}`,
+            "review-title",
+          ),
+          node(
+            "p",
+            `${data.travel_date.split("-").reverse().join(".")} · ${data.purpose}`,
+          ),
+        );
+      else
+        item.append(
+          node("p", `${index + 1}. ${data.merchant} · ${amount}`, "review-title"),
+          node(
+            "p",
+            data.receipt_reference.trim()
+              ? `${data.purpose} · Referenz ${data.receipt_reference}`
+              : data.purpose,
+          ),
+        );
+      if (row.files.length)
+        item.append(node("small", row.files.map((file) => file.name).join(" · ")));
       content.append(item);
     });
-    for (const [currency, total] of Object.entries(updateTotals()))
-      content.append(node("p", `Summe: ${money(total, currency)}`, "totals"));
+    content.append(node("p", `Summe: ${money(updateTotals())}`, "totals"));
     details.hidden = true;
     review.hidden = false;
     review.querySelector("h2").focus();
@@ -711,21 +790,29 @@
         signature: signature.id,
         declaration: true,
         privacy_acknowledged: true,
+        is_trip: Boolean(tripFields && !tripFields.hidden),
         website: form.elements.website.value,
       };
       for (const name of [
         "full_name",
         "email",
-        "postal_address",
+        "street",
+        "postal_code",
+        "city",
+        "country",
+        "account_holder",
         "iban",
+        "bic",
         "purpose",
-        "trip_location",
+        "purpose_details",
+        "trip_destination",
         "trip_start",
         "trip_end",
       ])
         data[name] = form.elements.namedItem(name)?.value || "";
       data.expenses = rows.map((row) => ({
         id: row.id,
+        kind: row.kind,
         ...rowData(row),
         uploads: row.files.map((file) => file.id),
       }));
@@ -761,7 +848,7 @@
       review
         .querySelectorAll("button,input")
         .forEach((element) => (element.disabled = false));
-      button.textContent = "Erstattung einreichen →";
+      button.textContent = "Antrag einreichen →";
     }
   });
   window.addEventListener("beforeunload", (event) => {

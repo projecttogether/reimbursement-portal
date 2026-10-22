@@ -210,7 +210,11 @@ def build_claim_pdf(claim, workspace):
                 {
                     "path": str(path_for(upload.normalized_key)),
                     "media_type": upload.media_type,
-                    "label": f"Position {expense.position + 1} · {expense.receipt_reference}",
+                    "label": " · ".join(
+                        filter(
+                            None, [f"Position {expense.position + 1}", expense.receipt_reference]
+                        )
+                    ),
                 }
             )
     manifest = {

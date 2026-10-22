@@ -11,12 +11,6 @@ from portal.constants import MAX_PDF_PAGES as MAX_PDF_PAGES
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEBUG = os.getenv("DJANGO_DEBUG", "0") == "1"
 DEPLOYMENT_ENV = os.getenv("DEPLOYMENT_ENV", "development" if DEBUG else "production")
-PORTAL_ROLE = os.getenv("PORTAL_ROLE", "standalone")
-EVENT_SLUG = os.getenv("EVENT_SLUG", "").strip()
-if PORTAL_ROLE not in {"standalone", "web", "webhook", "worker"}:
-    raise ImproperlyConfigured("PORTAL_ROLE must be standalone, web, webhook, or worker.")
-if PORTAL_ROLE == "web" and not EVENT_SLUG:
-    raise ImproperlyConfigured("A web service requires EVENT_SLUG.")
 if DEPLOYMENT_ENV not in {"development", "staging", "production"} or DEBUG != (
     DEPLOYMENT_ENV == "development"
 ):
@@ -27,10 +21,14 @@ CSRF_TRUSTED_ORIGINS = list(filter(None, os.getenv("CSRF_TRUSTED_ORIGINS", "").s
 ROOT_URLCONF = "config.urls"
 WSGI_APPLICATION = "config.wsgi.application"
 INSTALLED_APPS = [
+    "portal",
+    "django.contrib.admin",
+    "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
+    "django.contrib.messages",
     "django.contrib.staticfiles",
-    "portal",
+    "mozilla_django_oidc",
 ]
 MIDDLEWARE = [
     "portal.middleware.RequestContextMiddleware",
@@ -38,10 +36,11 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "portal.middleware.RequestLimitsMiddleware",
-    "portal.middleware.EventScopeMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
     "portal.middleware.PrivateResponseMiddleware",
 ]
 TEMPLATES = [
@@ -49,9 +48,51 @@ TEMPLATES = [
         "BACKEND": "django.template.backends.django.DjangoTemplates",
         "DIRS": [],
         "APP_DIRS": True,
-        "OPTIONS": {"context_processors": ["django.template.context_processors.request"]},
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
+            ]
+        },
     }
 ]
+
+# Admin sign-in through PT Login (Keycloak). Admin rights come from the groups claim.
+OIDC_RP_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "")
+OIDC_RP_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET", "")
+OIDC_ENABLED = bool(OIDC_RP_CLIENT_ID and OIDC_RP_CLIENT_SECRET)
+KEYCLOAK_BASE_URL = os.getenv("KEYCLOAK_BASE_URL", "https://auth.projecttogether.net").rstrip("/")
+KEYCLOAK_REALM = os.getenv("KEYCLOAK_REALM", "projecttogether")
+KEYCLOAK_REALM_URL = f"{KEYCLOAK_BASE_URL}/realms/{KEYCLOAK_REALM}"
+KEYCLOAK_ADMIN_GROUP = os.getenv(
+    "KEYCLOAK_ADMIN_GROUP", "/projecttogether/tools/reimbursement-portal-admins"
+)
+KEYCLOAK_EDITOR_GROUP = os.getenv(
+    "KEYCLOAK_EDITOR_GROUP", "/projecttogether/tools/reimbursement-portal"
+)
+OIDC_OP_AUTHORIZATION_ENDPOINT = f"{KEYCLOAK_REALM_URL}/protocol/openid-connect/auth"
+OIDC_OP_TOKEN_ENDPOINT = f"{KEYCLOAK_REALM_URL}/protocol/openid-connect/token"
+OIDC_OP_USER_ENDPOINT = f"{KEYCLOAK_REALM_URL}/protocol/openid-connect/userinfo"
+OIDC_OP_JWKS_ENDPOINT = f"{KEYCLOAK_REALM_URL}/protocol/openid-connect/certs"
+OIDC_OP_LOGOUT_ENDPOINT = f"{KEYCLOAK_REALM_URL}/protocol/openid-connect/logout"
+OIDC_OP_LOGOUT_URL_METHOD = "portal.auth.keycloak_logout_url"
+OIDC_RP_SIGN_ALGO = "RS256"
+OIDC_RP_SCOPES = "openid email profile"
+OIDC_STORE_ACCESS_TOKEN = False
+# The ID token is the logout hint; without it Keycloak keeps the SSO session.
+OIDC_STORE_ID_TOKEN = True
+OIDC_TIMEOUT = (3, 10)
+OIDC_CALLBACK_CLASS = "portal.auth.AdminCallbackView"
+AUTHENTICATION_BACKENDS = ["portal.auth.KeycloakBackend"]
+if DEBUG:
+    # Local development without Keycloak: `manage.py createsuperuser`.
+    AUTHENTICATION_BACKENDS.append("django.contrib.auth.backends.ModelBackend")
+LOGIN_URL = "admin:login"
+LOGIN_REDIRECT_URL = "/admin/"
+LOGIN_REDIRECT_URL_FAILURE = "/admin/kein-zugriff/"
+LOGOUT_REDIRECT_URL = "/"
+ADMIN_SESSION_SECONDS = 8 * 3600
 PRIVATE_STORAGE_ROOT = Path(os.getenv("PRIVATE_STORAGE_ROOT", str(BASE_DIR / "var/private")))
 PRIVATE_STORAGE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
 FILE_UPLOAD_TEMP_DIR = str(PRIVATE_STORAGE_ROOT / "incoming")
@@ -87,7 +128,8 @@ if os.getenv("TRUST_PROXY_HEADERS", "0") == "1":
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 X_FRAME_OPTIONS = "DENY"
 DATA_UPLOAD_MAX_MEMORY_SIZE = 128 * 1024
-DATA_UPLOAD_MAX_NUMBER_FIELDS = 20
+# Admin forms with inline template fields post a few hundred fields.
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 400
 DATA_UPLOAD_MAX_NUMBER_FILES = 1
 FILE_UPLOAD_MAX_MEMORY_SIZE = 0
 FILE_UPLOAD_HANDLERS = ["portal.middleware.BoundedUploadHandler"]
@@ -106,7 +148,7 @@ MAX_UPLOADS_PER_NETWORK = int(os.getenv("MAX_UPLOADS_PER_NETWORK", "60000"))
 MAX_UPLOAD_BYTES_PER_NETWORK = int(os.getenv("MAX_UPLOAD_BYTES_PER_NETWORK", "45000000000"))
 MAX_UPLOADS_PER_NETWORK_PER_MINUTE = int(os.getenv("MAX_UPLOADS_PER_NETWORK_PER_MINUTE", "3000"))
 MAX_PENDING_VALIDATIONS = int(os.getenv("MAX_PENDING_VALIDATIONS", "1000"))
-# Include the synchronous workers across every web resource sharing this storage.
+# The synchronous gunicorn workers of the web service.
 TOTAL_WEB_WORKERS = int(os.getenv("TOTAL_WEB_WORKERS", "2"))
 if TOTAL_WEB_WORKERS < 1:
     raise ImproperlyConfigured("TOTAL_WEB_WORKERS must be a positive integer.")
@@ -121,7 +163,10 @@ MIN_FREE_STORAGE_BYTES = int(os.getenv("MIN_FREE_STORAGE_BYTES", "1000000000"))
 JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "240"))
 JOB_LEASE_SECONDS = JOB_TIMEOUT_SECONDS + 120
 CONTENT_PURGE_ENABLED = os.getenv("CONTENT_PURGE_ENABLED", "0") == "1"
-SUCCESS_RETENTION_DAYS = int(os.getenv("SUCCESS_RETENTION_DAYS", "7"))
+# After delivery the PDF is deleted after PDF_RETENTION_DAYS; all other claim content
+# CONTENT_RETENTION_DAYS after submission. The privacy notice states both periods.
+PDF_RETENTION_DAYS = int(os.getenv("PDF_RETENTION_DAYS", "7"))
+CONTENT_RETENTION_DAYS = int(os.getenv("CONTENT_RETENTION_DAYS", "30"))
 UPLOAD_SCANNER = os.getenv("UPLOAD_SCANNER", "disabled" if DEBUG else "clamav")
 CLAMAV_HOST = os.getenv("CLAMAV_HOST", "scanner")
 CLAMAV_PORT = int(os.getenv("CLAMAV_PORT", "3310"))
@@ -173,13 +218,13 @@ if not DEBUG:
         "DATABASE_URL",
         "ALLOWED_HOSTS",
         "HEALTHCHECK_TOKEN",
+        "MAILERSEND_API_TOKEN",
+        "MAIL_FROM_ADDRESS",
+        "MAILERSEND_WEBHOOK_SIGNING_SECRET",
+        "APPROVED_DELIVERY_RECIPIENTS",
+        "OIDC_CLIENT_ID",
+        "OIDC_CLIENT_SECRET",
     ]
-    if PORTAL_ROLE in {"standalone", "worker"}:
-        required += ["MAILERSEND_API_TOKEN", "MAIL_FROM_ADDRESS"]
-    if PORTAL_ROLE in {"standalone", "webhook"}:
-        required += ["MAILERSEND_WEBHOOK_SIGNING_SECRET"]
-    if PORTAL_ROLE in {"standalone", "worker", "web"}:
-        required += ["APPROVED_DELIVERY_RECIPIENTS"]
     missing = [key for key in required if not os.getenv(key)]
     if (
         missing

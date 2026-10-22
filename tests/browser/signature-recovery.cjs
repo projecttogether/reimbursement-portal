@@ -34,7 +34,7 @@ if (!fixtures)
   const signatures = () =>
     [...uploads.values()].filter((item) => item.kind === "signature");
   const json = (route, status, value) => route.fulfill({ status, json: value });
-  await page.route("**/forms/demo/uploads/**", async (route) => {
+  await page.route("**/f/demo/uploads/**", async (route) => {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
     if (request.method() === "POST") {
@@ -55,8 +55,8 @@ if (!fixtures)
         name: `${kind}.png`,
         state: "pending",
         pages: 1,
-        status_url: `/forms/demo/uploads/${id}/status/`,
-        delete_url: `/forms/demo/uploads/${id}/`,
+        status_url: `/f/demo/uploads/${id}/status/`,
+        delete_url: `/f/demo/uploads/${id}/`,
       };
       uploads.set(id, item);
       if (kind === "signature") signatureCount++;
@@ -84,20 +84,23 @@ if (!fixtures)
       message: item.mode === "failed" ? "Synthetic invalid signature" : "",
     });
   });
-  await page.route("**/forms/demo/submit/", async (route) => {
+  await page.route("**/f/demo/submit/", async (route) => {
     submitted = route.request().postDataJSON();
     assert.equal(uploads.get(submitted.signature)?.mode, "ready");
     return json(route, 400, { error: "Synthetic submission captured" });
   });
   try {
-    await page.goto(`${base}/forms/demo/?new=1`);
+    await page.goto(`${base}/f/demo/`);
+    await page.locator("#id_purpose_0").check();
+    await page.locator("#id_is_trip").check();
     for (const [id, value] of Object.entries({
       id_full_name: "Alex Beispiel",
-      id_postal_address: "Teststraße 1\n12345 Berlin",
+      id_street: "Teststraße 1",
+      id_postal_code: "12345",
+      id_city: "Berlin",
       id_email: "participant@example.invalid",
       id_iban: "DE89370400440532013000",
-      id_purpose: "Synthetischer Workshop",
-      id_trip_location: "Berlin",
+      id_trip_destination: "Berlin",
       id_trip_start: "2026-10-20",
       id_trip_end: "2026-10-21",
     }))
