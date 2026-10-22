@@ -15,7 +15,6 @@ environment = os.environ | {
     "CSRF_TRUSTED_ORIGINS": "https://localhost",
     "MAILERSEND_API_TOKEN": "ci-only-never-sent",
     "MAILERSEND_WEBHOOK_SIGNING_SECRET": "ci-only-never-sent",
-    "MAIL_FROM_ADDRESS": "ci@example.invalid",
     "APPROVED_DELIVERY_RECIPIENTS": "ci@example.invalid",
     "TEST_RECIPIENT_ALLOWLIST": "ci@example.invalid",
     "HEALTHCHECK_TOKEN": "ci-only",

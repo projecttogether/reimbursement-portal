@@ -28,8 +28,6 @@ x-application: &application
     MAIL_DELIVERY_MODE: mailersend
     MAILERSEND_API_TOKEN: ${MAILERSEND_API_TOKEN:?Set the MailerSend API token}
     MAILERSEND_WEBHOOK_SIGNING_SECRET: ${MAILERSEND_WEBHOOK_SIGNING_SECRET:?Set the webhook signing secret}
-    MAIL_FROM_ADDRESS: ${MAIL_FROM_ADDRESS:?Set a verified sender address}
-    MAIL_REPLY_TO_ADDRESS: ${MAIL_REPLY_TO_ADDRESS:?Set the Finance support address}
     APPROVED_DELIVERY_RECIPIENTS: ${APPROVED_DELIVERY_RECIPIENTS:?Set the approved Moss or Finance inboxes}
     TEST_RECIPIENT_ALLOWLIST: ${TEST_RECIPIENT_ALLOWLIST:-}
     UPLOAD_SCANNER: clamav

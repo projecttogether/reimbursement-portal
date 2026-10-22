@@ -18,9 +18,11 @@ PostgreSQL credentials/URL, `ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, and
 `DEPLOYMENT_ENV=production`. Set `TRUST_PROXY_HEADERS=1` only when the existing
 proxy replaces forwarded protocol headers. Configure:
 
-- `MAIL_DELIVERY_MODE=mailersend`, verified `MAIL_FROM_ADDRESS`,
-  `MAIL_REPLY_TO_ADDRESS`, `MAILERSEND_API_TOKEN`, and
-  `MAILERSEND_WEBHOOK_SIGNING_SECRET`.
+- `MAIL_DELIVERY_MODE=mailersend`, `MAILERSEND_API_TOKEN` and
+  `MAILERSEND_WEBHOOK_SIGNING_SECRET`. Every form sends from
+  `no-reply@projecttogether.org` with reply-to `buchhaltung@projecttogether.org`;
+  both are fixed in `config/settings.py`, so `projecttogether.org` must be a
+  verified MailerSend domain.
 - `APPROVED_DELIVERY_RECIPIENTS`, comma-separated approved Moss/Finance inboxes.
   Admins choose a form's recipient from this list.
 - `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` of the PT Login client, and optionally
