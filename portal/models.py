@@ -181,7 +181,11 @@ class TemplateField(models.Model):
 
 
 class Form(models.Model):
-    """A published reimbursement form, created from a template by its owners."""
+    """A reimbursement form, drafted and published by its owners."""
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Entwurf"
+        PUBLISHED = "published", "Veröffentlicht"
 
     template = models.ForeignKey(
         FormTemplate, on_delete=models.PROTECT, related_name="forms", verbose_name="Vorlage"
@@ -208,7 +212,8 @@ class Form(models.Model):
     trip_end = models.DateField("Reiseende (Vorbelegung)", null=True, blank=True)
     opens_at = models.DateTimeField("Geöffnet ab", null=True, blank=True)
     closes_at = models.DateTimeField("Geöffnet bis", null=True, blank=True)
-    active = models.BooleanField("Aktiv", default=False)
+    status = models.CharField("Status", max_length=12, choices=Status.choices, default=Status.DRAFT)
+    creation_key = models.UUIDField(null=True, unique=True, editable=False)
     primary = models.BooleanField(
         "Startseite",
         default=False,
@@ -243,7 +248,7 @@ class Form(models.Model):
     def is_open(self):
         now = timezone.now()
         return (
-            self.active
+            self.status == self.Status.PUBLISHED
             and (not self.opens_at or now >= self.opens_at)
             and (not self.closes_at or now <= self.closes_at)
             and not self.internal_value_errors()

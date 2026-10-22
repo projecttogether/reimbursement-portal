@@ -41,7 +41,9 @@ Admins sign in with PT Login (Keycloak) at `/admin/`. Template admins define
 templates, the types of forms, including the internal fields each form fills in
 (for example KST, KTR or an ID), and maintain the versioned privacy notice. Form
 editors create forms from a template, set its internal values and purpose options,
-and share the link `/f/<slug>/`. Both see the submitted claims of their forms;
+and share the link `/f/<slug>/`. New forms start as drafts and settings save
+automatically. **Veröffentlichen** makes a valid form available during its configured
+opening period; **Unveröffentlichen** returns it to a draft. Both see the submitted claims of their forms;
 template admins can retry processing and delivery.
 
 ## Deploy with Coolify

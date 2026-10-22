@@ -33,7 +33,7 @@ class Command(BaseCommand):
                 ),
                 "recipient": "finance@example.invalid",
                 "support_email": "finance@example.invalid",
-                "active": True,
+                "status": Form.Status.PUBLISHED,
             },
         )
         self.stdout.write(f"{'Created' if created else 'Kept'} demo form at /f/{form.slug}/.")

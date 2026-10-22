@@ -1,4 +1,5 @@
 import time
+import uuid
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -150,7 +151,7 @@ def test_admin_creates_a_form_from_a_template(admin_client, template, settings):
         "recipient": "finance@example.invalid",
         "support_email": "team@example.invalid",
         "purpose_options": "Teilnahme\nMitwirkung",
-        "active": "on",
+        "_publication": "publish",
     }
     response = admin_client.post(url, data)
     assert response.status_code == 200 and not Form.objects.exists()
@@ -222,7 +223,6 @@ def test_only_template_admins_choose_the_start_page_form(client, editor, form):
         "value_kst": "TEST-KST",
         "recipient": form.recipient,
         "support_email": form.support_email,
-        "active": "on",
         "primary": "on",
     }
     current = Form.objects.create(
@@ -244,6 +244,140 @@ def test_only_template_admins_choose_the_start_page_form(client, editor, form):
     form.refresh_from_db()
     current.refresh_from_db()
     assert form.primary and not current.primary
+
+
+def form_settings(form, **changes):
+    return {
+        "_autosave": "1",
+        "name": form.name,
+        "slug": form.slug,
+        "value_kst": form.field_values.get("kst", ""),
+        "value_ktr": form.field_values.get("ktr", ""),
+        "recipient": form.recipient,
+        "support_email": form.support_email,
+        **changes,
+    }
+
+
+def test_new_forms_autosave_as_incomplete_drafts(admin_client, template, client):
+    url = f"/admin/portal/form/add/?template={template.pk}"
+    page = admin_client.get(url).content.decode()
+    assert "Entwurf" in page and "Veröffentlichen" in page
+    assert 'name="active"' not in page and 'name="status"' not in page
+    assert "Verantwortliche" not in page and 'name="owners"' not in page
+    assert 'name="_save"' not in page and 'name="_continue"' not in page
+    response = admin_client.post(url, {"_autosave": "1", "instructions": "Erste Notiz"})
+    assert response.status_code == 200, response.content
+    form = Form.objects.get()
+    assert form.status == Form.Status.DRAFT
+    assert form.instructions == "Erste Notiz" and form.name == "Neues Formular" and form.slug
+    assert form.field_values == {"kst": "", "ktr": ""}
+    assert form.owners.get().username == "admin"
+    assert response.json()["url"] == f"/admin/portal/form/{form.pk}/change/"
+    client.logout()
+    assert client.get(response.json()["link"]).status_code == 403
+
+
+def test_autosave_keeps_a_draft_and_updates_the_existing_form(admin_client, form):
+    form.status = Form.Status.DRAFT
+    form.save()
+    url = f"/admin/portal/form/{form.pk}/change/"
+    response = admin_client.post(url, form_settings(form, name="Neuer Name", value_kst=""))
+    assert response.status_code == 200, response.content
+    form.refresh_from_db()
+    assert form.name == "Neuer Name" and form.field_values["kst"] == ""
+    assert form.status == Form.Status.DRAFT and Form.objects.count() == 1
+    assert response.json()["status_label"] == "Entwurf"
+
+
+def test_retrying_a_first_autosave_updates_the_same_draft(admin_client, template):
+    url = f"/admin/portal/form/add/?template={template.pk}"
+    data = {"_autosave": "1", "_creation_key": str(uuid.uuid4()), "name": "Neues Formular"}
+    first = admin_client.post(url, data)
+    assert first.status_code == 200
+    data["instructions"] = "Nach Verbindungsfehler erneut gespeichert"
+    second = admin_client.post(url, data)
+    assert second.status_code == 200, second.content
+    assert second.json()["url"] == first.json()["url"]
+    assert second.json()["slug"] == first.json()["slug"]
+    assert Form.objects.count() == 1
+    assert Form.objects.get().instructions == data["instructions"]
+
+
+def test_publishing_validates_then_unpublishing_closes_the_form(admin_client, client, form):
+    form.status = Form.Status.DRAFT
+    form.save()
+    url = f"/admin/portal/form/{form.pk}/change/"
+    invalid = form_settings(form, _publication="publish", value_kst="", support_email="")
+    response = admin_client.post(url, invalid)
+    assert response.status_code == 400
+    assert set(response.json()["errors"]) == {"value_kst", "support_email"}
+    form.refresh_from_db()
+    assert form.status == Form.Status.DRAFT
+    response = admin_client.post(url, form_settings(form, _publication="publish"))
+    assert response.status_code == 200 and response.json()["status"] == "published"
+    form.refresh_from_db()
+    assert form.is_open()
+    assert "Unveröffentlichen" in admin_client.get(url).content.decode()
+    response = admin_client.post(url, form_settings(form, _publication="unpublish"))
+    assert response.status_code == 200 and response.json()["status"] == "draft"
+    form.refresh_from_db()
+    assert not form.is_open()
+    client.logout()
+    assert client.get(f"/f/{form.slug}/").status_code == 403
+
+
+def test_autosave_preserves_published_status_and_rejects_invalid_settings(admin_client, form):
+    url = f"/admin/portal/form/{form.pk}/change/"
+    response = admin_client.post(url, form_settings(form, name="Aktualisiert"))
+    assert response.status_code == 200 and response.json()["status"] == "published"
+    form.refresh_from_db()
+    assert form.name == "Aktualisiert" and form.is_open()
+    version = form.config_version
+    response = admin_client.post(url, form_settings(form, name="Nicht speichern", value_kst=""))
+    assert response.status_code == 400
+    form.refresh_from_db()
+    assert form.name == "Aktualisiert" and form.config_version == version
+    assert form.status == Form.Status.PUBLISHED
+
+
+def test_publication_keeps_the_opening_schedule(admin_client, form):
+    url = f"/admin/portal/form/{form.pk}/change/"
+    response = admin_client.post(
+        url,
+        form_settings(form, _publication="publish", opens_at_0="2099-01-01", opens_at_1="12:00:00"),
+    )
+    assert response.status_code == 200, response.content
+    form.refresh_from_db()
+    assert form.status == Form.Status.PUBLISHED and not form.is_open()
+
+
+def test_autosave_and_publication_require_ownership(client, editor, form):
+    client.force_login(editor)
+    url = f"/admin/portal/form/{form.pk}/change/"
+    response = client.post(url, form_settings(form, _publication="unpublish"))
+    assert response.status_code == 404
+    form.refresh_from_db()
+    assert form.status == Form.Status.PUBLISHED
+    form.owners.add(editor)
+    response = client.post(url, form_settings(form, _publication="unpublish"))
+    assert response.status_code == 200
+    form.refresh_from_db()
+    assert form.status == Form.Status.DRAFT
+    assert form.owners.filter(pk=editor.pk).exists()
+
+
+def test_status_cannot_be_changed_through_autosave_fields(admin_client, form):
+    url = f"/admin/portal/form/{form.pk}/change/"
+    response = admin_client.post(url, form_settings(form, status="draft"))
+    assert response.status_code == 200
+    form.refresh_from_db()
+    assert form.status == Form.Status.PUBLISHED
+
+
+def test_form_list_shows_publication_status(admin_client, form):
+    page = admin_client.get("/admin/portal/form/").content.decode()
+    assert "Veröffentlicht" in page and ">Status<" in page
 
 
 def test_admin_adds_a_new_privacy_notice_version(admin_client, privacy_notice):

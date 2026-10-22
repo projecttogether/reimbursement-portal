@@ -9,7 +9,7 @@ from django.utils import timezone
 from PIL import Image
 
 from portal.jobs import run_one
-from portal.models import Job, Upload
+from portal.models import Form, Job, Upload
 from portal.services.retention import cleanup, purge_claim
 from portal.services.storage import path_for
 from tests.conftest import camera_jpeg_bytes, image_bytes
@@ -235,7 +235,7 @@ def test_uploads_and_submission_share_the_editable_draft_rule(
 ):
     form = prepared["form"]
     if change == "closed":
-        form.active = False
+        form.status = Form.Status.DRAFT
     form.save()
     upload = prepared["client"].post(
         "/f/test/uploads/",

@@ -95,7 +95,7 @@ def form(template, privacy_notice):
         field_values={"kst": "TEST-KST", "ktr": "TEST-KTR"},
         recipient="finance@example.invalid",
         support_email="finance@example.invalid",
-        active=True,
+        status=Form.Status.PUBLISHED,
     )
 
 
