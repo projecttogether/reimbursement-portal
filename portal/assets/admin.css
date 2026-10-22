@@ -39,22 +39,22 @@
 }
 
 /* Text inside admin pages */
-:where(#content-main) :where(p, ul, ol) {
+:where(#content) :where(p, ul, ol) {
   @apply leading-relaxed;
 }
-:where(#content-main) :where(a:not([class])) {
+:where(#content) :where(a:not([class])) {
   @apply ui-link;
 }
-:where(#content-main) :where(h2:not([class])) {
+:where(#content) :where(h2:not([class])) {
   @apply mt-2 text-lg font-semibold tracking-tight;
 }
-:where(#content-main) :where(ul:not([class])) {
+:where(#content) :where(ul:not([class])) {
   @apply list-disc space-y-1 pl-5;
 }
-:where(#content-main) :where(ul:not([class]) ul) {
+:where(#content) :where(ul:not([class]) ul) {
   @apply mt-1;
 }
-:where(#content-main) :where(.help, .quiet, .small) {
+:where(#content) :where(.help, .quiet, .small) {
   @apply text-sm text-muted-foreground;
 }
 
