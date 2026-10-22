@@ -225,6 +225,14 @@ def test_only_template_admins_choose_the_start_page_form(client, editor, form):
         "active": "on",
         "primary": "on",
     }
+    current = Form.objects.create(
+        template=form.template,
+        slug="allgemein",
+        name="Allgemein",
+        recipient=form.recipient,
+        support_email=form.support_email,
+        primary=True,
+    )
     url = f"/admin/portal/form/{form.pk}/change/"
     form.owners.add(editor)
     client.force_login(editor)
@@ -234,7 +242,8 @@ def test_only_template_admins_choose_the_start_page_form(client, editor, form):
     client.force_login(user_with(roles.TEMPLATE_ADMIN, "admin"))
     assert client.post(url, data).status_code == 302
     form.refresh_from_db()
-    assert form.primary
+    current.refresh_from_db()
+    assert form.primary and not current.primary
 
 
 def test_admin_adds_a_new_privacy_notice_version(admin_client, privacy_notice):

@@ -263,6 +263,10 @@ class Form(models.Model):
                 errors.append(field.label)
         return errors
 
+    def validate_constraints(self, exclude=None):
+        # Marking a second start page is a handover that save() performs, not a conflict.
+        super().validate_constraints(exclude={*(exclude or ()), "primary"})
+
     def save(self, *args, **kwargs):
         # Every saved change makes open drafts reload, so nobody submits against old values.
         if self.pk and not kwargs.get("update_fields"):
