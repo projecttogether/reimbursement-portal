@@ -310,3 +310,12 @@ def test_search_page_lists_all_results(admin_client, accepted):
     page = admin_client.get("/admin/suche/", {"q": "Beispiel"}).content.decode()
     assert "Alex Beispiel" in page and f"/admin/portal/claim/{accepted.pk}/change/" in page
     assert "Keine Treffer" in admin_client.get("/admin/suche/", {"q": "zzz"}).content.decode()
+
+
+def test_list_search_box_sends_the_query_and_reset_clears_it(admin_client, accepted):
+    page = admin_client.get("/admin/portal/claim/", {"q": "Alex", "state": "received"})
+    html = page.content.decode()
+    assert 'name="q" value="Alex"' in html
+    assert '<input type="hidden" name="state" value="received">' in html
+    assert '<input type="hidden" name="q"' not in html
+    assert 'href="?"' in html

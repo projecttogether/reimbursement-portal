@@ -414,6 +414,10 @@ p.datetime br {
 }
 
 /* The changelist card holding toolbar, actions, table and pagination */
+/* Not clipped, so the toolbar's filter dropdowns can extend beyond the card. */
 #changelist {
-  @apply overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm;
+  @apply rounded-xl border bg-card text-card-foreground shadow-sm;
+}
+#changelist-form {
+  @apply overflow-hidden rounded-b-xl;
 }

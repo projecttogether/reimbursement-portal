@@ -5,7 +5,7 @@
   </summary>
   <div class="ui-dropdown-content left-0 max-h-80 w-60 overflow-y-auto">
     <div class="ui-dropdown-label">{{ title|capfirst }}</div>
-    <ul>
+    <ul class="flex flex-col">
       {% for choice in choices %}
       <li><a class="ui-dropdown-item" href="{{ choice.query_string|iriencode }}"{% if choice.selected %} aria-current="true"{% endif %}>
         <span class="flex size-4 items-center justify-center">{% if choice.selected %}{% icon "check" class="size-4 text-foreground" %}{% endif %}</span>{{ choice.display }}
