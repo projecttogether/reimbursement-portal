@@ -22,12 +22,25 @@ from tests.test_forms import mileage_row, post, reopened
 pytestmark = pytest.mark.django_db
 
 
-def test_fixed_purpose_is_text_and_cannot_be_overridden(prepared):
+@pytest.mark.parametrize(
+    "purpose_options",
+    [
+        "Teilnahme an der Werkstatt",
+        "\r\n Teilnahme an der Werkstatt \r\n\r\n",
+        "Teilnahme an der Werkstatt\nTeilnahme an der Werkstatt",
+        " Teilnahme an der Werkstatt \r\n\r\nTeilnahme an der Werkstatt\t",
+    ],
+    ids=["single", "whitespace", "duplicate", "duplicate-whitespace"],
+)
+def test_fixed_purpose_is_text_and_cannot_be_overridden(prepared, purpose_options):
     form = prepared["form"]
-    form.purpose_options = "Teilnahme an der Werkstatt"
+    form.purpose_options = purpose_options
     form.save()
     reopened(prepared)
-    page = prepared["client"].get("/f/test/").content.decode()
+    response = prepared["client"].get("/f/test/")
+    page = response.content.decode()
+    assert response.context["claim_form"].fields["purpose"].widget.is_hidden
+    assert response.context["configuration"]["fixed_purpose"] == "Teilnahme an der Werkstatt"
     assert 'type="radio"' not in page
     assert 'name="purpose"' in page
     assert "Anlass/Bezug zum Projekt oder der Veranstaltung" in page
@@ -36,13 +49,23 @@ def test_fixed_purpose_is_text_and_cannot_be_overridden(prepared):
     prepared["data"]["purpose"] = "Manipulated purpose"
     assert post(prepared).status_code == 202
     claim = Claim.objects.get()
-    assert claim.purpose == claim.expenses.get().purpose == form.purpose_options
+    assert claim.purpose == claim.expenses.get().purpose == "Teilnahme an der Werkstatt"
 
 
-def test_multiple_purposes_remain_selectable(client, form):
-    form.purpose_options = "Teilnahme\nMitwirkung"
+@pytest.mark.parametrize(
+    "purpose_options",
+    ["Teilnahme\nMitwirkung", "Teilnahme\nMitwirkung\n Teilnahme \nMitwirkung\n"],
+    ids=["distinct", "duplicates"],
+)
+def test_multiple_purposes_remain_selectable(client, form, purpose_options):
+    form.purpose_options = purpose_options
     form.save()
-    page = client.get("/f/test/").content.decode()
+    response = client.get("/f/test/")
+    page = response.content.decode()
+    assert list(response.context["claim_form"].fields["purpose"].choices) == [
+        ("Teilnahme", "Teilnahme"),
+        ("Mitwirkung", "Mitwirkung"),
+    ]
     assert page.count('type="radio"') == 2
     assert 'name="is_trip"' not in page
     assert "Meine Auslagen gehören zu einer Reise" not in page
