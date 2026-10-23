@@ -14,6 +14,13 @@ template sets, such as KST, KTR or an ID; participants never see them, the PDF d
 template by its owners. It holds the internal values, purpose options, instructions,
 recipient, contact and opening times.
 
+**Form publication** (`services/publication.py`): a form starts as a *draft* of a
+template and is *published* or *unpublished* by its owners. Every save validates the
+settings for the status the form has afterwards: a draft accepts gaps and gets a default
+name and slug; publishing needs complete settings. The first save of a new form is
+idempotent per *creation key*. Only template admins delete forms, and only drafts
+without claims. The form admin is the HTTP adapter over this module.
+
 **Revision**: a digest of what a participant agrees to and is validated against: the
 declaration, the privacy notice version, the purpose options, the travel mode and the
 mileage rate (`Form.revision`). It is derived, never stored on the form, so no save

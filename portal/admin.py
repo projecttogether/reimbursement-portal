@@ -5,7 +5,7 @@ import uuid
 from django import forms
 from django.conf import settings
 from django.contrib import admin, messages
-from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.exceptions import PermissionDenied
 from django.db import IntegrityError
 from django.http import Http404, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -13,7 +13,6 @@ from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils.html import format_html
 from django.utils.http import url_has_allowed_host_and_scheme, urlencode
-from django.utils.text import slugify
 from mozilla_django_oidc.views import OIDCLogoutView
 
 from portal import admin_navigation, roles
@@ -26,7 +25,7 @@ from portal.models import (
     TemplateField,
 )
 from portal.roles import is_form_editor, is_template_admin
-from portal.services import delivery, operations
+from portal.services import delivery, operations, publication
 from portal.templatetags.ui import render_component
 
 
@@ -213,77 +212,6 @@ class FormTemplateAdmin(RoleAdmin):
         return super().has_delete_permission(request, obj) and not (obj and obj.forms.exists())
 
 
-class FormAdminForm(forms.ModelForm):
-    """Adds one field per template field; values are stored in `field_values`."""
-
-    portal_template = None
-    portal_status = Form.Status.DRAFT
-
-    class Meta:
-        model = Form
-        fields = "__all__"
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        if not self.instance.template_id:
-            self.instance.template = self.portal_template
-        self.instance.status = self.portal_status
-        if self.portal_status == Form.Status.DRAFT:
-            for name, field in self.fields.items():
-                if name in {"name", "slug", "recipient", "support_email"} or name.startswith(
-                    "value_"
-                ):
-                    field.required = False
-        for field in self.portal_template.fields.all():
-            self.initial.setdefault(
-                f"value_{field.key}", self.instance.field_values.get(field.key, "")
-            )
-        if "recipient" in self.fields:
-            choices = [(address, address) for address in settings.APPROVED_DELIVERY_RECIPIENTS]
-            self.fields["recipient"] = forms.ChoiceField(
-                label=self.fields["recipient"].label,
-                choices=[("", "—"), *choices],
-                required=self.portal_status == Form.Status.PUBLISHED,
-            )
-
-    def clean(self):
-        data = super().clean()
-        if self.portal_status == Form.Status.DRAFT:
-            if "name" not in self.errors and not data.get("name"):
-                data["name"] = "Neues Formular"
-            if "slug" not in self.errors and not data.get("slug"):
-                stem = slugify(data.get("name", ""))[:30] or "formular"
-                data["slug"] = self.instance.slug or f"{stem}-{uuid.uuid4().hex[:12]}"
-        values = {}
-        for field in self.portal_template.fields.all():
-            name = f"value_{field.key}"
-            if self.portal_status == Form.Status.DRAFT and not data.get(name):
-                values[field.key] = ""
-                continue
-            try:
-                values[field.key] = field.validate(data.get(name, ""))
-            except ValidationError as exc:
-                self.add_error(name, exc)
-        self.instance.field_values = values
-        start, end = data.get("trip_start"), data.get("trip_end")
-        if start and end and start > end:
-            self.add_error("trip_end", "Das Reiseende darf nicht vor dem Reisebeginn liegen.")
-        opens, closes = data.get("opens_at"), data.get("closes_at")
-        if opens and closes and opens >= closes:
-            self.add_error("closes_at", "Das Ende muss nach dem Beginn liegen.")
-        return data
-
-
-def value_field(field):
-    if field.kind == TemplateField.Kind.CHOICE:
-        return forms.ChoiceField(
-            label=field.label,
-            required=field.required,
-            choices=[("", "—"), *((option, option) for option in field.options())],
-        )
-    return forms.CharField(label=field.label, required=field.required, max_length=200)
-
-
 @admin.register(Form, site=site)
 class FormAdmin(admin.ModelAdmin):
     change_form_template = "admin/portal/form/change_form.html"
@@ -320,9 +248,9 @@ class FormAdmin(admin.ModelAdmin):
         return self.has_view_permission(request, obj)
 
     def has_delete_permission(self, request, obj=None):
-        return is_template_admin(request.user) and (
-            obj is None or (obj.status == Form.Status.DRAFT and not obj.claims.exists())
-        )
+        if obj is None:
+            return is_template_admin(request.user)
+        return publication.may_delete(request.user, obj)
 
     def delete_view(self, request, object_id, extra_context=None):
         if request.method == "POST" and request.POST.get("post") != "yes":
@@ -357,18 +285,9 @@ class FormAdmin(admin.ModelAdmin):
         return super().add_view(request, form_url, extra_context)
 
     def get_form(self, request, obj=None, change=False, **kwargs):
-        template = self._template(request, obj)
-        attributes = {f"value_{field.key}": value_field(field) for field in template.fields.all()}
-        attributes["portal_template"] = template
-        status = obj.status if obj else Form.Status.DRAFT
-        if request.method == "POST":
-            action = request.POST.get("_publication")
-            if action == "publish":
-                status = Form.Status.PUBLISHED
-            elif action == "unpublish":
-                status = Form.Status.DRAFT
-        attributes["portal_status"] = status
-        kwargs["form"] = type("FormAdminForm", (FormAdminForm,), attributes)
+        # changeform_view has already refused unknown actions.
+        status = publication.status_after(obj, request.POST.get("_publication", ""))
+        kwargs["form"] = publication.settings_form(self._template(request, obj), status)
         return super().get_form(request, obj, change, **kwargs)
 
     def get_fieldsets(self, request, obj=None):
@@ -450,17 +369,15 @@ class FormAdmin(admin.ModelAdmin):
 
     def changeform_view(self, request, object_id=None, form_url="", extra_context=None):
         self._request = request
-        creation_key = None
-        if self._autosave(request) and object_id is None and request.POST.get("_creation_key"):
-            try:
-                creation_key = uuid.UUID(request.POST["_creation_key"])
-            except ValueError:
-                return JsonResponse(
-                    {"error": "Ungültige Anfrage. Bitte lade die Seite neu."}, status=400
-                )
-            existing = self.get_queryset(request).filter(creation_key=creation_key).first()
-            if existing:
-                object_id = str(existing.pk)
+        try:
+            creation_key = self._creation_key(request) if object_id is None else None
+        except ValueError:
+            return JsonResponse(
+                {"error": "Ungültige Anfrage. Bitte lade die Seite neu."}, status=400
+            )
+        existing = creation_key and publication.created(request.user, creation_key)
+        if existing:
+            object_id = str(existing.pk)
         form = self.get_object(request, object_id) if object_id else None
         extra_context = {
             **(extra_context or {}),
@@ -477,18 +394,16 @@ class FormAdmin(admin.ModelAdmin):
                 "Die Vorlage wurde geändert. Das Formular bleibt geschlossen, bis diese "
                 f"internen Werte passen: {', '.join(form.internal_value_errors())}.",
             )
-        if request.method == "POST" and request.POST.get("_publication", "") not in {
-            "",
-            "publish",
-            "unpublish",
-        }:
-            return JsonResponse({"error": "Ungültiger Statuswechsel."}, status=400)
+        try:
+            publication.status_after(form, request.POST.get("_publication", ""))
+        except publication.Refused as exc:
+            return JsonResponse({"error": str(exc)}, status=400)
         try:
             response = super().changeform_view(request, object_id, form_url, extra_context)
         except IntegrityError:
             # A timed-out first save may still finish while its retry is being processed.
             existing = (
-                self.get_queryset(request).filter(creation_key=creation_key).first()
+                publication.created(request.user, creation_key)
                 if creation_key and object_id is None
                 else None
             )
@@ -512,6 +427,12 @@ class FormAdmin(admin.ModelAdmin):
     @staticmethod
     def _autosave(request):
         return request.method == "POST" and request.POST.get("_autosave") == "1"
+
+    @classmethod
+    def _creation_key(cls, request):
+        """The key a script sends with every first save of a new form; ValueError if invalid."""
+        value = request.POST.get("_creation_key") if cls._autosave(request) else None
+        return uuid.UUID(value) if value else None
 
     def _saved_response(self, request, obj):
         return JsonResponse(
@@ -538,15 +459,8 @@ class FormAdmin(admin.ModelAdmin):
         return super().response_change(request, obj)
 
     def save_model(self, request, obj, form, change):
-        if not change and self._autosave(request) and request.POST.get("_creation_key"):
-            obj.creation_key = uuid.UUID(request.POST["_creation_key"])
-        super().save_model(request, obj, form, change)
-
-    def save_related(self, request, form, formsets, change):
-        super().save_related(request, form, formsets, change)
-        if not change or not is_template_admin(request.user):
-            # Editors cannot remove themselves from a form they are editing.
-            form.instance.owners.add(request.user)
+        creation_key = None if change else self._creation_key(request)
+        publication.save(obj, request.user, creation_key=creation_key)
 
 
 DELIVERY_STATUS = {
