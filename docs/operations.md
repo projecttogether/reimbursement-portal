@@ -76,7 +76,11 @@ adapter checks that list as well as the approved recipient list.
 
 New drafts share a PostgreSQL-backed budget across sessions and web processes.
 `MAX_DRAFTS_PER_NETWORK` defaults to 300 creations per 24 hours per IPv4 address or
-IPv6 /64, allowing the expected 250 participants to share a venue connection.
+IPv6 /48, allowing the expected 250 participants to share a venue connection. An
+IPv6 /48 is one site: a single customer or tunnel holds thousands of /64s, which must
+not count as separate networks. `MAX_ACTIVE_DRAFTS` (10,000) limits open drafts across
+all networks; keep it far above the per-network budget, or a few networks can open
+every draft and turn all new participants away.
 Existing drafts remain accessible after the creation limit is reached. No raw IP
 address is stored in the counter, and inactive counter keys expire after two days.
 Set `TRUSTED_PROXY_CIDRS` to the exact reverse-proxy networks if the application
@@ -86,14 +90,17 @@ untrusted address. With no trusted proxies configured, it uses `REMOTE_ADDR`.
 Configure the edge's connection/request limits as well and monitor 429/503 rates.
 
 Upload admission also charges cumulative processing work: 200 uploads / 150 MB per
-draft and 60,000 uploads / 45 GB per network per day, with 3,000 uploads per network
-per minute. Deleting or replacing a file does not refund those counters. A pending
-upload reserves 10 MB for normalization; each draft permits 100 MB of derived and
-reserved data. Normalized images are resized and capped at 10 MB of serialized
-output. A global database lock protects admission against concurrent processes,
-including the configured free-space floor, request-spooling headroom and active
-execution reservations. At most 1,000 validations may be queued/running. Tune the
-documented environment limits against measured deployment capacity before launch.
+draft and 5,000 uploads / 15 GB per network per day, with 1,000 uploads per network
+per minute. That is ample for one venue of 250 participants, and it bounds how long a
+single network can keep the shared validation queue full: about as long as the worker
+needs for its daily uploads. Deleting or replacing a file does not refund those
+counters. A pending upload reserves 10 MB for normalization; each draft permits
+100 MB of derived and reserved data. Normalized images are resized and capped at
+10 MB of serialized output. A global database lock protects admission against
+concurrent processes, including the configured free-space floor, request-spooling
+headroom and active execution reservations. At most 1,000 validations may be
+queued/running. Tune the documented environment limits against measured deployment
+capacity before launch.
 
 ## MailerSend and handoff
 
@@ -111,7 +118,10 @@ Finance must accept the selected handoff/deletion policy before setting
 `CONTENT_PURGE_ENABLED=1`. It defaults to `0`; abandoned uploads and orphan
 temporary files are still cleaned. `PDF_RETENTION_DAYS` (7) and
 `CONTENT_RETENTION_DAYS` (30) are the periods the privacy notice states; change
-both together with the notice. An already started purge always resumes.
+both together with the notice. An already started purge always resumes. While a
+production deployment runs with purge disabled, claims outlive those periods: the
+admin area warns template admins, and `migrate` and the worker report check
+`portal.W001` at startup.
 
 Run a complete dummy claim through the approved MailerSend/Moss route before
 launch. Check all pages, KST/KTR, declaration, signature, amounts, and compressed

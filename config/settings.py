@@ -148,9 +148,11 @@ MAX_DRAFT_DERIVED_BYTES = 100_000_000
 MAX_RENDER_WORKSPACE_BYTES = 600_000_000
 MAX_UPLOADS_PER_DRAFT = 200
 MAX_UPLOAD_BYTES_PER_DRAFT = 150_000_000
-MAX_UPLOADS_PER_NETWORK = int(os.getenv("MAX_UPLOADS_PER_NETWORK", "60000"))
-MAX_UPLOAD_BYTES_PER_NETWORK = int(os.getenv("MAX_UPLOAD_BYTES_PER_NETWORK", "45000000000"))
-MAX_UPLOADS_PER_NETWORK_PER_MINUTE = int(os.getenv("MAX_UPLOADS_PER_NETWORK_PER_MINUTE", "3000"))
+# One client network can keep the shared validation queue busy for about as long as
+# its daily upload budget lasts. Size it for one venue, not for many.
+MAX_UPLOADS_PER_NETWORK = int(os.getenv("MAX_UPLOADS_PER_NETWORK", "5000"))
+MAX_UPLOAD_BYTES_PER_NETWORK = int(os.getenv("MAX_UPLOAD_BYTES_PER_NETWORK", "15000000000"))
+MAX_UPLOADS_PER_NETWORK_PER_MINUTE = int(os.getenv("MAX_UPLOADS_PER_NETWORK_PER_MINUTE", "1000"))
 MAX_PENDING_VALIDATIONS = int(os.getenv("MAX_PENDING_VALIDATIONS", "1000"))
 # The synchronous gunicorn workers of the web service.
 TOTAL_WEB_WORKERS = int(os.getenv("TOTAL_WEB_WORKERS", "2"))
@@ -160,7 +162,9 @@ UPLOAD_TEMP_HEADROOM_BYTES = TOTAL_WEB_WORKERS * (MAX_RECEIPT_BYTES + 128_000)
 DOCUMENT_SANDBOX_ENABLED = os.getenv("DOCUMENT_SANDBOX_ENABLED", "1") == "1"
 MAX_JOB_AGE_SECONDS = int(os.getenv("MAX_JOB_AGE_SECONDS", "900"))
 REQUIRE_WORKER_HEARTBEAT = os.getenv("REQUIRE_WORKER_HEARTBEAT", "1" if not DEBUG else "0") == "1"
-MAX_ACTIVE_DRAFTS = int(os.getenv("MAX_ACTIVE_DRAFTS", "1000"))
+# Far above one network's draft budget: otherwise a few client networks can open every
+# available draft and turn all new participants away.
+MAX_ACTIVE_DRAFTS = int(os.getenv("MAX_ACTIVE_DRAFTS", "10000"))
 MAX_DRAFTS_PER_NETWORK = int(os.getenv("MAX_DRAFTS_PER_NETWORK", "300"))
 TRUSTED_PROXY_CIDRS = list(filter(None, os.getenv("TRUSTED_PROXY_CIDRS", "").split(",")))
 MIN_FREE_STORAGE_BYTES = int(os.getenv("MIN_FREE_STORAGE_BYTES", "1000000000"))

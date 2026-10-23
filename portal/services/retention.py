@@ -25,6 +25,11 @@ class ClaimBusy(Exception):
     """A job or execution workspace still uses the claim; purge later."""
 
 
+def purge_disabled_in_production():
+    """Production keeps claims past the periods the privacy notice states until purge is on."""
+    return settings.DEPLOYMENT_ENV == "production" and not settings.CONTENT_PURGE_ENABLED
+
+
 def purge_claim(claim_id):
     with transaction.atomic():
         claim = Claim.objects.select_for_update().get(pk=claim_id)
