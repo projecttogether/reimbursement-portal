@@ -30,6 +30,11 @@ claims record the version they acknowledged.
 **Admin roles** (`portal/roles.py`): *template admins* and *form editors*, granted at
 every PT Login sign-in from the Keycloak `groups` claim (`portal/auth.py`).
 
+**Form access**: template admins manage every form; form editors manage the forms
+they own. Everyone sees the claims of the forms they manage. The admin lists, object
+checks, search and the owner preview all ask `roles.managed_forms` and
+`roles.visible_claims`.
+
 **Draft**: one participant's unsubmitted form, bound to a browser session and a secret
 token. A draft is *accepting* while it is unsubmitted, its form is open, and its
 revision matches the form's (`services/drafts.py`).

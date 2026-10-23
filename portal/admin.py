@@ -17,7 +17,7 @@ from django.utils.http import url_has_allowed_host_and_scheme, urlencode
 from django.utils.text import slugify
 from mozilla_django_oidc.views import OIDCLogoutView
 
-from portal import admin_navigation
+from portal import admin_navigation, roles
 from portal.models import (
     Claim,
     Form,
@@ -312,13 +312,13 @@ class FormAdmin(admin.ModelAdmin):
         return is_form_editor(request.user)
 
     def has_view_permission(self, request, obj=None):
-        return is_form_editor(request.user) and self._owns(request, obj)
+        return is_form_editor(request.user) and (obj is None or roles.manages(request.user, obj))
 
     def has_add_permission(self, request):
         return is_form_editor(request.user)
 
     def has_change_permission(self, request, obj=None):
-        return is_form_editor(request.user) and self._owns(request, obj)
+        return self.has_view_permission(request, obj)
 
     def has_delete_permission(self, request, obj=None):
         return is_template_admin(request.user) and (
@@ -330,18 +330,10 @@ class FormAdmin(admin.ModelAdmin):
             return JsonResponse({"error": "Bitte bestätige das Löschen des Entwurfs."}, status=400)
         return super().delete_view(request, object_id, extra_context)
 
-    def _owns(self, request, obj):
-        return (
-            obj is None
-            or is_template_admin(request.user)
-            or obj.owners.filter(pk=request.user.pk).exists()
-        )
-
     def get_queryset(self, request):
-        queryset = super().get_queryset(request).select_related("template")
-        if is_template_admin(request.user):
-            return queryset
-        return queryset.filter(owners=request.user)
+        return roles.managed_forms(
+            request.user, super().get_queryset(request).select_related("template")
+        )
 
     def _template(self, request, obj):
         if obj is not None:
@@ -702,11 +694,7 @@ class ClaimAdmin(admin.ModelAdmin):
         return is_form_editor(request.user)
 
     def has_view_permission(self, request, obj=None):
-        return is_form_editor(request.user) and (
-            obj is None
-            or is_template_admin(request.user)
-            or obj.form.owners.filter(pk=request.user.pk).exists()
-        )
+        return is_form_editor(request.user) and (obj is None or roles.sees(request.user, obj))
 
     def has_add_permission(self, request):
         return False
@@ -718,10 +706,9 @@ class ClaimAdmin(admin.ModelAdmin):
         return False
 
     def get_queryset(self, request):
-        queryset = super().get_queryset(request).select_related("form", "delivery")
-        if is_template_admin(request.user):
-            return queryset
-        return queryset.filter(form__owners=request.user)
+        return roles.visible_claims(
+            request.user, super().get_queryset(request).select_related("form", "delivery")
+        )
 
     def get_search_results(self, request, queryset, search_term):
         try:

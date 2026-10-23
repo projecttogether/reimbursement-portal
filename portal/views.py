@@ -15,7 +15,7 @@ from portal import intake
 from portal.forms import SEPA_COUNTRIES, ClaimForm
 from portal.intake import IntakeError
 from portal.models import Claim, Form, PrivacyNotice
-from portal.roles import is_form_editor, is_template_admin
+from portal.roles import manages
 from portal.services import delivery, uploads
 from portal.services.capacity import storage_available
 from portal.services.drafts import get_or_create_draft, session_hash
@@ -38,12 +38,6 @@ def api_errors(view):
     return wrapped
 
 
-def can_preview(user, form):
-    return is_form_editor(user) and (
-        is_template_admin(user) or form.owners.filter(pk=user.pk).exists()
-    )
-
-
 @require_GET
 def index(request):
     primary = Form.objects.select_related("template").filter(primary=True).first()
@@ -62,7 +56,7 @@ def privacy(request):
 def form_page(request, form_slug):
     form = get_object_or_404(Form.objects.select_related("template"), slug=form_slug)
     # Owners can look at a form before it opens; nothing can be uploaded or submitted.
-    preview = not form.is_open() and can_preview(request.user, form)
+    preview = not form.is_open() and manages(request.user, form)
     if not form.is_open() and not preview:
         return render(request, "portal/closed.html", {"form": form}, status=403)
     notice = PrivacyNotice.current()
