@@ -283,7 +283,12 @@ class Form(models.Model):
             super().save(*args, **kwargs)
 
     def purpose_choices(self):
-        return [line.strip() for line in self.purpose_options.splitlines() if line.strip()]
+        # Repeated presets are one choice, so a single distinct purpose stays fixed text.
+        return list(
+            dict.fromkeys(
+                line.strip() for line in self.purpose_options.splitlines() if line.strip()
+            )
+        )
 
     def internal_values(self):
         """(label, value) pairs in template order, for the PDF."""
