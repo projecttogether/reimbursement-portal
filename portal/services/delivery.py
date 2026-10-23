@@ -21,7 +21,6 @@ from django.utils.dateparse import parse_datetime
 
 from portal.models import Claim, Delivery, DeliveryAttempt, DeliveryEvent
 from portal.services import mailersend, queue
-from portal.services.drafts import digest
 from portal.services.storage import path_for
 from portal.services.transport import (
     ACCEPTED,
@@ -74,6 +73,10 @@ class DuplicateRisk(Exception):
 
 class Undeliverable(Exception):
     """The message cannot be sent; nothing was transmitted."""
+
+
+def _recipient_hash(address):
+    return hashlib.sha256(address.lower().encode()).hexdigest()
 
 
 def recipient_approved(address):
@@ -308,7 +311,7 @@ def _record_evidence(*, kind, provider_id, timestamp, message_id, recipient, att
             "kind": kind,
             "provider_timestamp": timestamp,
             "message_id": message_id,
-            "recipient_hash": digest(recipient.lower()),
+            "recipient_hash": _recipient_hash(recipient),
             "attempt_tag": attempt_tag,
         },
     )
@@ -333,7 +336,7 @@ def _apply(event):
         return
     delivery = Delivery.objects.select_for_update().get(pk=attempt.delivery_id)
     attempt = DeliveryAttempt.objects.select_for_update().get(pk=attempt.pk)
-    if digest(delivery.recipient.lower()) != event.recipient_hash or delivery.claim.state in {
+    if _recipient_hash(delivery.recipient) != event.recipient_hash or delivery.claim.state in {
         Claim.State.PURGING,
         Claim.State.PURGED,
     }:

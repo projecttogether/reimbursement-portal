@@ -10,15 +10,12 @@ from pathlib import Path
 
 from django.db import transaction
 from django.db.models import Q, Sum
-from django.shortcuts import get_object_or_404
-from django.utils import timezone
 
 from portal import intake
 from portal.intake import IntakeError
-from portal.models import Draft, Form, Job, Upload
-from portal.services import queue
+from portal.models import Draft, Job, Upload
+from portal.services import drafts, queue
 from portal.services.capacity import CapacityError, admit_upload, release_upload
-from portal.services.drafts import authorize_draft, ensure_accepting, session_hash
 from portal.services.storage import path_for, remove_keys, save_upload, upload_source_key
 
 CAPACITY_MESSAGES = {
@@ -39,8 +36,8 @@ def remove_files(upload):
     remove_keys(upload.source_key, upload.normalized_key)
 
 
-def accept(request, form_slug, *, file, kind, expense_id, draft_id, token):
-    """Store a source file for an editable draft and queue its validation."""
+def accept(participant, form_slug, *, file, kind, expense_id, draft_id, token):
+    """Store a source file for the participant's accepting draft and queue its validation."""
     if kind not in {"receipt", "signature"} or not file:
         raise IntakeError("Bitte wähle eine Belegdatei oder Unterschrift aus.")
     extension = Path(file.name).suffix.lower()
@@ -56,8 +53,7 @@ def accept(request, form_slug, *, file, kind, expense_id, draft_id, token):
     key = ""
     try:
         with transaction.atomic():
-            draft = authorize_draft(request, draft_id, token, form_slug, lock=True)
-            ensure_accepting(draft, Form.objects.get(pk=draft.form_id), revision=draft.revision)
+            draft, _ = drafts.gate(participant, form_slug, draft_id, token, drafts.UPLOAD)
             count = draft.uploads.filter(kind=kind, expense_id=expense_id).count()
             if (
                 count
@@ -68,7 +64,7 @@ def accept(request, form_slug, *, file, kind, expense_id, draft_id, token):
             if kind == "receipt" and _receipt_bytes(draft) + file.size > limits.submission_bytes:
                 raise IntakeError(intake.message("submission_too_large"), status=413)
             try:
-                reservation = admit_upload(request, draft, file.size)
+                reservation = admit_upload(participant.network, draft, file.size)
             except CapacityError as exc:
                 raise IntakeError(
                     CAPACITY_MESSAGES.get(
@@ -112,15 +108,25 @@ def _receipt_bytes(draft):
     return draft.uploads.filter(kind="receipt").aggregate(total=Sum("size"))["total"] or 0
 
 
-def owned(request, form_slug, upload_id):
-    """The upload, if this session's unexpired draft owns it; otherwise 404."""
-    return get_object_or_404(
-        Upload,
-        pk=upload_id,
-        draft__form__slug=form_slug,
-        draft__session_hash=session_hash(request),
-        draft__expires_at__gt=timezone.now(),
+def _gate(participant, form_slug, upload_id, token, action):
+    """Pass the Draft gate for the upload's draft; the upload, or None if it is gone since."""
+    draft_id = (
+        Upload.objects.filter(pk=upload_id, draft__form__slug=form_slug)
+        .values_list("draft_id", flat=True)
+        .first()
     )
+    if draft_id is None:
+        raise IntakeError("Die Datei wurde nicht gefunden.", status=404)
+    drafts.gate(participant, form_slug, draft_id, token, action)
+    return Upload.objects.filter(pk=upload_id).first()
+
+
+def owned(participant, form_slug, upload_id, token):
+    """The upload, if the participant may read it; IntakeError otherwise."""
+    upload = _gate(participant, form_slug, upload_id, token, drafts.READ)
+    if upload is None:
+        raise IntakeError("Die Datei wurde nicht gefunden.", status=404)
+    return upload
 
 
 def status(upload):
@@ -135,11 +141,14 @@ def status(upload):
 
 
 @transaction.atomic
-def discard(request, form_slug, upload_id):
-    upload = owned(request, form_slug, upload_id)
-    draft = Draft.objects.select_for_update().get(pk=upload.draft_id)
-    if draft.claim_id or upload.claim_id:
-        raise IntakeError("Eingereichte Belege können nicht geändert werden.", status=409)
+def discard(participant, form_slug, upload_id, token):
+    """Remove an upload of the participant's unsubmitted draft unless it is busy."""
+    try:
+        upload = _gate(participant, form_slug, upload_id, token, drafts.REMOVE)
+    except drafts.AlreadySubmitted as exc:
+        raise IntakeError("Eingereichte Belege können nicht geändert werden.", status=409) from exc
+    if upload is None:
+        return  # A concurrent removal of the same upload got the draft lock first.
     list(Job.objects.select_for_update().filter(upload=upload))
     if _busy(Upload.objects.filter(pk=upload.pk)):
         raise IntakeError(

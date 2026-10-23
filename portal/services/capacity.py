@@ -80,8 +80,8 @@ def _check(additional):
         raise CapacityError("storage_capacity")
 
 
-def admit_upload(request, draft, size):
-    """Charge an upload to its draft and network, and reserve its normalized output.
+def admit_upload(network, draft, size):
+    """Charge an upload to its draft and client network, and reserve its normalized output.
 
     Returns the bytes to record as the new upload's `reserved_bytes`.
     """
@@ -91,7 +91,7 @@ def admit_upload(request, draft, size):
         or draft.upload_bytes + size > settings.MAX_UPLOAD_BYTES_PER_DRAFT
     ):
         raise CapacityError("draft_work_limit")
-    budget = locked_budget(request)
+    budget = locked_budget(network)
     now = timezone.now()
     if budget.upload_window_start <= now - timedelta(minutes=1):
         budget.upload_window_start, budget.upload_window_count = now, 0

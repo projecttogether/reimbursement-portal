@@ -43,8 +43,18 @@ checks, search and the owner preview all ask `roles.managed_forms` and
 `roles.visible_claims`.
 
 **Draft**: one participant's unsubmitted form, bound to a browser session and a secret
-token. A draft is *accepting* while it is unsubmitted, its form is open, and its
-revision matches the form's (`services/drafts.py`).
+token. A draft is *accepting* while it is unsubmitted and its form is open, available
+(an approved recipient and a privacy notice) and on the draft's revision
+(`services/drafts.py`).
+
+**Draft gate** (`drafts.gate`): the one check every participant action passes before it
+touches a draft: reading an upload, removing one, uploading and submitting. Its
+`Action` says which checks run and what is locked. Submitting a draft that is already a
+claim raises `AlreadySubmitted`, which submit turns into a replay.
+
+**Participant** (`portal/participants.py`): the session binding and client network
+behind a request. Drafts, uploads and submissions take a Participant rather than the
+request; `RequestParticipant` adapts a request.
 
 **Claim**: the immutable record created when a draft is accepted. Its states are
 `received → rendering → ready`, or `processing_failed`, then `purging → purged`.
@@ -116,3 +126,4 @@ the orphan sweep (`services/storage.py`).
 | Document runner | `SandboxedRunner`, `DirectRunner` (`UnavailableRunner` when misconfigured) | `documents.configured_runner()` |
 | Scanner | `ClamAVScanner`, `DisabledScanner` (`MisconfiguredScanner`) | `scanner.configured_scanner()` |
 | Disk measurement | `capacity.SystemDisk`, `tests.conftest.FakeDisk` | `capacity.disk` |
+| Participant | `participants.RequestParticipant`, `tests.test_drafts.Participant` | the participant views |

@@ -159,7 +159,6 @@ def prepared(client, form):
     data = {
         "draft_id": str(draft.id),
         "token": token,
-        "revision": form.revision(),
         "full_name": "Alex Beispiel",
         "email": "participant@example.invalid",
         "street": "Teststraße 1",

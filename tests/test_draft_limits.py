@@ -6,7 +6,7 @@ from django.test import Client, RequestFactory
 from django.utils import timezone
 
 from portal.models import Draft, DraftAdmission
-from portal.services.draft_limits import client_network
+from portal.participants import client_network
 from portal.services.retention import cleanup
 
 pytestmark = pytest.mark.django_db

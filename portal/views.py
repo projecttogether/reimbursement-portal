@@ -15,10 +15,11 @@ from portal import intake
 from portal.forms import SEPA_COUNTRIES, ClaimForm
 from portal.intake import IntakeError
 from portal.models import Claim, Form, PrivacyNotice
+from portal.participants import RequestParticipant
 from portal.roles import manages
 from portal.services import delivery, uploads
 from portal.services.capacity import storage_available
-from portal.services.drafts import get_or_create_draft, session_hash
+from portal.services.drafts import open_draft
 from portal.services.mailersend import verify_webhook
 from portal.services.readiness import dependencies
 from portal.services.storage import check_writable
@@ -59,18 +60,10 @@ def form_page(request, form_slug):
     preview = not form.is_open() and manages(request.user, form)
     if not form.is_open() and not preview:
         return render(request, "portal/closed.html", {"form": form}, status=403)
-    notice = PrivacyNotice.current()
-    if notice is None:
-        return render(
-            request,
-            "portal/closed.html",
-            {"form": form, "message": "Das Formular ist derzeit nicht verfügbar."},
-            status=503,
-        )
     draft, token = None, ""
     if not preview:
         try:
-            draft, token = get_or_create_draft(request, form)
+            draft, token = open_draft(RequestParticipant(request), form)
         except IntakeError as exc:
             return render(
                 request,
@@ -79,13 +72,13 @@ def form_page(request, form_slug):
                 status=exc.status,
             )
     template = form.template
+    notice = PrivacyNotice.current()
     claim_form = ClaimForm(
         form=form, initial={"trip_start": form.trip_start, "trip_end": form.trip_end}
     )
     configuration = {
         "draft_id": str(draft.id) if draft else "",
         "token": token,
-        "revision": draft.revision if draft else form.revision(),
         "preview": preview,
         "sepa_countries": sorted(SEPA_COUNTRIES),
         "travel": template.travel,
@@ -124,7 +117,7 @@ def upload(request, form_slug):
     if getattr(request, "upload_limit_exceeded", False):
         raise IntakeError(intake.message("receipt_too_large"), status=413)
     item = uploads.accept(
-        request,
+        RequestParticipant(request),
         form_slug,
         file=file,
         kind=request.POST.get("kind", "receipt"),
@@ -149,15 +142,22 @@ def upload(request, form_slug):
     )
 
 
+def draft_token(request):
+    """The form script sends the draft token with every request about an upload."""
+    return request.headers.get("X-Draft-Token")
+
+
 @require_GET
+@api_errors
 def upload_status(request, form_slug, upload_id):
-    return JsonResponse(uploads.status(uploads.owned(request, form_slug, upload_id)))
+    upload = uploads.owned(RequestParticipant(request), form_slug, upload_id, draft_token(request))
+    return JsonResponse(uploads.status(upload))
 
 
 @require_http_methods(["DELETE"])
 @api_errors
 def upload_remove(request, form_slug, upload_id):
-    uploads.discard(request, form_slug, upload_id)
+    uploads.discard(RequestParticipant(request), form_slug, upload_id, draft_token(request))
     return JsonResponse({"removed": True})
 
 
@@ -165,7 +165,7 @@ def upload_remove(request, form_slug, upload_id):
 @api_errors
 def submit(request, form_slug):
     data = json.loads(request.body)
-    claim = submit_claim(request, form_slug, data)
+    claim = submit_claim(RequestParticipant(request), form_slug, data)
     return JsonResponse(
         {
             "reference": claim.reference,
@@ -180,7 +180,7 @@ def received(request, claim_id):
     claim = get_object_or_404(
         Claim.objects.select_related("form"),
         pk=claim_id,
-        accepted_draft__session_hash=session_hash(request),
+        accepted_draft__session_hash=RequestParticipant(request).binding(),
     )
     status, final = delivery.participant_status(claim)
     if request.GET.get("format") == "json":

@@ -101,12 +101,6 @@ def test_stale_configuration_requires_review_again(prepared):
     assert not Claim.objects.exists()
 
 
-def test_a_forged_revision_is_rejected(prepared):
-    prepared["data"]["revision"] = "0" * 16
-    assert post(prepared).status_code == 409
-    assert not Claim.objects.exists()
-
-
 def test_closed_form_rejects_new_submission(prepared):
     Form.objects.filter(pk=prepared["form"].pk).update(
         closes_at=timezone.now() - timedelta(seconds=1)

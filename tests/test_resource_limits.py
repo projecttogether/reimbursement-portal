@@ -36,6 +36,10 @@ from tests.conftest import image_bytes
 pytestmark = pytest.mark.django_db
 
 
+def token(prepared):
+    return {"X-Draft-Token": prepared["data"]["token"]}
+
+
 def upload_file(prepared, *, kind="receipt", content=None, name="receipt.png"):
     return prepared["client"].post(
         "/f/test/uploads/",
@@ -56,7 +60,12 @@ def test_replacement_does_not_refund_processing_budget(prepared, settings, kind)
         response = upload_file(prepared, kind=kind)
         assert response.status_code == 202
         assert run_one()
-        assert prepared["client"].delete(response.json()["delete_url"]).status_code == 200
+        assert (
+            prepared["client"]
+            .delete(response.json()["delete_url"], headers=token(prepared))
+            .status_code
+            == 200
+        )
     assert upload_file(prepared, kind=kind).status_code == 429
     prepared["draft"].refresh_from_db()
     assert prepared["draft"].upload_count == 2
@@ -70,7 +79,12 @@ def test_failed_validation_also_consumes_work_budget(prepared, settings):
     assert run_one()
     item = Upload.objects.get(pk=response.json()["id"])
     assert item.state == "failed" and item.reserved_bytes == 0
-    assert prepared["client"].delete(response.json()["delete_url"]).status_code == 200
+    assert (
+        prepared["client"]
+        .delete(response.json()["delete_url"], headers=token(prepared))
+        .status_code
+        == 200
+    )
     assert upload_file(prepared).status_code == 429
 
 
@@ -156,7 +170,12 @@ def test_workspace_transfer_retains_capacity_until_cleanup(prepared, settings):
         assert (
             WorkspaceReservation.objects.get(upload=item).size == settings.MAX_NORMALIZED_FILE_BYTES
         )
-        assert prepared["client"].delete(response.json()["delete_url"]).status_code == 409
+        assert (
+            prepared["client"]
+            .delete(response.json()["delete_url"], headers=token(prepared))
+            .status_code
+            == 409
+        )
         assert Path(directory).is_dir()
     assert not WorkspaceReservation.objects.exists()
 

@@ -45,6 +45,7 @@ def participant(index):
             )[1]
         )
         client.headers["X-CSRFToken"] = client.cookies["csrftoken"]
+        client.headers["X-Draft-Token"] = config["token"]
         rows, pending, ready_times = [], [], []
         for position in range(2):
             row = {
@@ -98,7 +99,6 @@ def participant(index):
             json={
                 "draft_id": config["draft_id"],
                 "token": config["token"],
-                "revision": config["revision"],
                 "signature": signature["id"],
                 "declaration": True,
                 "privacy_acknowledged": True,

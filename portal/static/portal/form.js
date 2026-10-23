@@ -67,7 +67,11 @@
         credentials: "same-origin",
         ...options,
         signal: controller.signal,
-        headers: { "X-CSRFToken": csrf, ...options.headers },
+        headers: {
+          "X-CSRFToken": csrf,
+          "X-Draft-Token": config.token,
+          ...options.headers,
+        },
       });
       result = await response.json();
     } catch {
@@ -786,7 +790,6 @@
       const data = {
         draft_id: config.draft_id,
         token: config.token,
-        revision: config.revision,
         signature: signature.id,
         declaration: true,
         privacy_acknowledged: true,
