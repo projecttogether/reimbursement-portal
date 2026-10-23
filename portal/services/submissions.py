@@ -159,13 +159,6 @@ def submit_claim(participant, form_slug, data):
     signature = files[payload["signature"]]
     if signature.kind != "signature":
         raise IntakeError("Eine Datei ist nicht verfügbar. Bitte lade sie erneut hoch.")
-    if (
-        sum(upload.size for upload in files.values() if upload.kind == "receipt")
-        > settings.MAX_SUBMISSION_BYTES
-        or sum(upload.pages for upload in files.values() if upload.kind == "receipt")
-        > settings.MAX_CLAIM_PAGES
-    ):
-        raise IntakeError(message("claim_too_large"))
     if Expense.objects.filter(id__in=[row["id"] for row in payload["expenses"]]).exists():
         raise IntakeError("Ungültige Positionskennung. Bitte öffne ein neues Formular.", status=409)
     fields = {

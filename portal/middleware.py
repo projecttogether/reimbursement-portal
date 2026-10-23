@@ -4,6 +4,8 @@ from django.conf import settings
 from django.core.files.uploadhandler import StopUpload, TemporaryFileUploadHandler
 from django.http import JsonResponse
 
+from portal import intake
+
 
 class BoundedUploadHandler(TemporaryFileUploadHandler):
     def receive_data_chunk(self, raw_data, start):
@@ -26,7 +28,7 @@ class RequestLimitsMiddleware:
             settings.MAX_RECEIPT_BYTES + 128_000 if request.path.endswith("/uploads/") else 128_000
         )
         if length > cap:
-            return JsonResponse({"error": "Die Datei oder Anfrage ist zu groß."}, status=413)
+            return JsonResponse({"error": intake.message("request_too_large")}, status=413)
         return self.get_response(request)
 
 

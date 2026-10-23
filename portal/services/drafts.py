@@ -28,8 +28,8 @@ from django.utils.crypto import constant_time_compare
 
 from portal.intake import IntakeError
 from portal.models import Draft, Form, PrivacyNotice
+from portal.services import network_budget
 from portal.services.delivery import recipient_approved
-from portal.services.draft_limits import reserve_draft
 
 # New drafts one browser session may open per day.
 MAX_DRAFTS_PER_SESSION = 10
@@ -151,7 +151,7 @@ def open_draft(participant, form):
         >= MAX_DRAFTS_PER_SESSION
     ):
         raise IntakeError("Zu viele neue Formulare. Bitte versuche es später erneut.", status=429)
-    if not reserve_draft(participant.network):
+    if not network_budget.charge_draft(participant.network):
         raise IntakeError(
             "Zu viele neue Formulare aus diesem Netzwerk. Bitte versuche es später erneut.",
             status=429,

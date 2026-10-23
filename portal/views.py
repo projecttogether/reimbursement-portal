@@ -110,16 +110,13 @@ def form_page(request, form_slug):
 @require_POST
 @api_errors
 def upload(request, form_slug):
-    if not storage_available():
-        raise IntakeError("Der Upload ist vorübergehend nicht verfügbar.", status=503)
     # Parsing the body sets the flag when the bounded upload handler stopped it.
     file = request.FILES.get("file")
-    if getattr(request, "upload_limit_exceeded", False):
-        raise IntakeError(intake.message("receipt_too_large"), status=413)
     item = uploads.accept(
         RequestParticipant(request),
         form_slug,
         file=file,
+        truncated=getattr(request, "upload_limit_exceeded", False),
         kind=request.POST.get("kind", "receipt"),
         expense_id=request.POST.get("expense_id"),
         draft_id=request.POST.get("draft_id"),

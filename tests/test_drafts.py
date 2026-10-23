@@ -1,5 +1,3 @@
-import uuid
-from dataclasses import dataclass, field
 from datetime import timedelta
 
 import pytest
@@ -9,30 +7,11 @@ from portal.intake import IntakeError
 from portal.models import Draft, Form, PrivacyNotice
 from portal.services import drafts
 from portal.services.drafts import READ, REMOVE, SUBMIT, UPLOAD
+from tests.conftest import Participant
 
 pytestmark = pytest.mark.django_db
 EDITS = [REMOVE, UPLOAD, SUBMIT]
 ACCEPTS = [UPLOAD, SUBMIT]
-
-
-@dataclass
-class Participant:
-    """An in-memory participant: a browser session and its remembered drafts."""
-
-    network: str = "192.0.2.1/32"
-    session: str | None = None
-    memory: dict = field(default_factory=dict)
-
-    def binding(self, *, create=False):
-        if self.session is None and create:
-            self.session = uuid.uuid4().hex
-        return self.session
-
-    def remembered(self, form_slug):
-        return self.memory.get(form_slug)
-
-    def remember(self, form_slug, draft_id, token):
-        self.memory[form_slug] = (str(draft_id), token)
 
 
 @pytest.fixture

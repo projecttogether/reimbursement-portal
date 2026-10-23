@@ -74,6 +74,16 @@ validation runs or an execution workspace holds it (`services/uploads.py`).
 and participant messages that the form, its script and server validation
 share (`portal/intake.py`). An **IntakeError** is a participant-facing rejection.
 
+**Upload admission** (`uploads.accept`): every limit an upload must pass, each with its
+message from intake: free storage, the file's kind, type and size, the Draft gate, the
+draft's files and receipt total, then the draft's and network's work budgets and disk
+capacity. Only the request size cap (middleware) comes earlier. Submit checks the chosen
+receipts against the same claim limits (`uploads.claimable`).
+
+**Network budget** (`services/network_budget.py`): the admission budget a client
+network shares across its new drafts and uploads, over a 24-hour and a one-minute
+window.
+
 **Authoritative PDF**: the single generated document (summary, signature, every receipt
 page) that Finance receives. Built by *document processing* (`services/documents.py`)
 in a sandboxed or direct *runner*.
@@ -126,4 +136,4 @@ the orphan sweep (`services/storage.py`).
 | Document runner | `SandboxedRunner`, `DirectRunner` (`UnavailableRunner` when misconfigured) | `documents.configured_runner()` |
 | Scanner | `ClamAVScanner`, `DisabledScanner` (`MisconfiguredScanner`) | `scanner.configured_scanner()` |
 | Disk measurement | `capacity.SystemDisk`, `tests.conftest.FakeDisk` | `capacity.disk` |
-| Participant | `participants.RequestParticipant`, `tests.test_drafts.Participant` | the participant views |
+| Participant | `participants.RequestParticipant`, `tests.conftest.Participant` | the participant views |

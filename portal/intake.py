@@ -80,6 +80,12 @@ STATIC_MESSAGES = {
     "malware_detected": "Die Datei hat die Sicherheitsprüfung nicht bestanden.",
     "scanner_unavailable": "Die Sicherheitsprüfung ist verzögert. Bitte warte oder versuche es später erneut.",
     "upload_unchecked": "Die Datei konnte nicht geprüft werden. Bitte lade sie erneut hoch.",
+    "request_too_large": "Die Datei oder Anfrage ist zu groß.",
+    "upload_unavailable": "Der Upload ist vorübergehend nicht verfügbar.",
+    "draft_work_limit": "Für dieses Formular wurden zu viele Dateien hochgeladen. Bitte kontaktiere uns.",
+    "network_work_limit": "Zu viele Uploads aus diesem Netzwerk. Bitte versuche es später erneut.",
+    "draft_storage_limit": "Die Dateien benötigen zu viel Speicher. Bitte entferne nicht benötigte Dateien.",
+    "upload_capacity": "Die Upload-Kapazität ist gerade begrenzt. Bitte warte kurz und versuche es erneut.",
 }
 
 
@@ -91,18 +97,10 @@ def messages():
         "receipt_too_large": f"Eine Belegdatei darf höchstens {megabytes(current.receipt_bytes)} groß sein.",
         "receipt_size": f"Jede Belegdatei muss zwischen 1 Byte und {megabytes(current.receipt_bytes)} groß sein.",
         "signature_too_large": f"Die Unterschrift darf höchstens {megabytes(current.signature_bytes)} groß sein.",
-        "file_too_large": (
-            f"Die Unterschrift darf höchstens {megabytes(current.signature_bytes)}, "
-            f"ein Beleg höchstens {megabytes(current.receipt_bytes)} groß sein."
-        ),
         "submission_too_large": (
             f"Alle Belege zusammen dürfen höchstens {megabytes(current.submission_bytes)} groß sein."
         ),
         "claim_pages": f"Alle Belege zusammen dürfen höchstens {current.claim_pages} Seiten enthalten.",
-        "claim_too_large": (
-            f"Die Belege überschreiten {megabytes(current.submission_bytes)} "
-            f"oder {current.claim_pages} Seiten."
-        ),
         "expense_count": f"Bitte füge 1 bis {current.expenses} Auslagenpositionen hinzu.",
         "files_per_expense": f"Jede Position benötigt 1 bis {current.files_per_expense} Belegdateien.",
         "mileage_files": f"Für Kilometer sind höchstens {current.files_per_expense} Nachweise erlaubt.",

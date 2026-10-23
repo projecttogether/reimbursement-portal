@@ -15,14 +15,16 @@ from portal import intake
 from portal.intake import IntakeError
 from portal.models import Draft, Job, Upload
 from portal.services import drafts, queue
-from portal.services.capacity import CapacityError, admit_upload, release_upload
+from portal.services.capacity import (
+    CapacityError,
+    admit_upload,
+    release_upload,
+    storage_available,
+)
 from portal.services.storage import path_for, remove_keys, save_upload, upload_source_key
 
-CAPACITY_MESSAGES = {
-    "draft_work_limit": "Für dieses Formular wurden zu viele Dateien hochgeladen. Bitte kontaktiere uns.",
-    "network_work_limit": "Zu viele Uploads aus diesem Netzwerk. Bitte versuche es später erneut.",
-    "draft_storage_limit": "Die Dateien benötigen zu viel Speicher. Bitte entferne nicht benötigte Dateien.",
-}
+# Capacity refusals a participant caused; the others mean the service is busy (503).
+CAPACITY_TOO_MANY = frozenset({"draft_work_limit", "network_work_limit"})
 UNACCEPTED_LIFETIME = timedelta(hours=24)
 
 
@@ -36,9 +38,22 @@ def remove_files(upload):
     remove_keys(upload.source_key, upload.normalized_key)
 
 
-def accept(participant, form_slug, *, file, kind, expense_id, draft_id, token):
-    """Store a source file for the participant's accepting draft and queue its validation."""
-    if kind not in {"receipt", "signature"} or not file:
+def accept(participant, form_slug, *, file, kind, expense_id, draft_id, token, truncated=False):
+    """Store a source file for the participant's accepting draft and queue its validation.
+
+    Upload admission: every limit is checked here, with its message from intake. First
+    free storage, the file's kind, type and size, then the Draft gate, the draft's files
+    and receipt total, and finally the draft's and network's work budgets and disk
+    capacity. `truncated` means the request's upload handler stopped the file at the
+    receipt limit.
+    """
+    if not storage_available():
+        raise IntakeError(intake.message("upload_unavailable"), status=503)
+    if kind not in {"receipt", "signature"}:
+        raise IntakeError("Bitte wähle eine Belegdatei oder Unterschrift aus.")
+    if truncated:
+        raise IntakeError(intake.message(f"{kind}_too_large"), status=413)
+    if not file:
         raise IntakeError("Bitte wähle eine Belegdatei oder Unterschrift aus.")
     extension = Path(file.name).suffix.lower()
     if extension not in (
@@ -61,17 +76,15 @@ def accept(participant, form_slug, *, file, kind, expense_id, draft_id, token):
                 or draft.uploads.count() >= limits.draft_files
             ):
                 raise IntakeError("Bitte entferne zuerst eine vorhandene Datei.")
-            if kind == "receipt" and _receipt_bytes(draft) + file.size > limits.submission_bytes:
-                raise IntakeError(intake.message("submission_too_large"), status=413)
+            if kind == "receipt":
+                ensure_receipts_fit(_receipt_bytes(draft) + file.size)
             try:
                 reservation = admit_upload(participant.network, draft, file.size)
             except CapacityError as exc:
+                code = str(exc)
                 raise IntakeError(
-                    CAPACITY_MESSAGES.get(
-                        str(exc),
-                        "Die Upload-Kapazität ist gerade begrenzt. Bitte warte kurz und versuche es erneut.",
-                    ),
-                    status=429 if str(exc) in {"draft_work_limit", "network_work_limit"} else 503,
+                    intake.message(code, intake.message("upload_capacity")),
+                    status=429 if code in CAPACITY_TOO_MANY else 503,
                 ) from exc
             upload_id = uuid.uuid4()
             key = upload_source_key(upload_id, extension)
@@ -82,7 +95,7 @@ def accept(participant, form_slug, *, file, kind, expense_id, draft_id, token):
                     limits.signature_bytes if kind == "signature" else limits.receipt_bytes,
                 )
             except ValueError as exc:
-                raise IntakeError(intake.message("file_too_large"), status=413) from exc
+                raise IntakeError(intake.message(f"{kind}_too_large"), status=413) from exc
             if not size:
                 raise IntakeError("Die Datei ist leer.")
             upload = Upload.objects.create(
@@ -106,6 +119,15 @@ def accept(participant, form_slug, *, file, kind, expense_id, draft_id, token):
 
 def _receipt_bytes(draft):
     return draft.uploads.filter(kind="receipt").aggregate(total=Sum("size"))["total"] or 0
+
+
+def ensure_receipts_fit(receipt_bytes, receipt_pages=0):
+    """The receipts of one claim stay within its size and page limits."""
+    limits = intake.limits()
+    if receipt_bytes > limits.submission_bytes:
+        raise IntakeError(intake.message("submission_too_large"), status=413)
+    if receipt_pages > limits.claim_pages:
+        raise IntakeError(intake.message("claim_pages"), status=413)
 
 
 def _gate(participant, form_slug, upload_id, token, action):
@@ -159,7 +181,8 @@ def discard(participant, form_slug, upload_id, token):
 
 
 def claimable(draft, upload_ids):
-    """Lock the draft's ready, unattached uploads by id, all present on disk.
+    """Lock the draft's ready, unattached uploads by id, all present on disk and together
+    within one claim's receipt limits.
 
     Caller holds the draft lock in an atomic transaction.
     """
@@ -175,6 +198,10 @@ def claimable(draft, upload_ids):
         raise IntakeError("Bitte warte, bis alle Belege und die Unterschrift geprüft sind.")
     if any(not path_for(upload.normalized_key).is_file() for upload in uploads.values()):
         raise IntakeError("Eine Datei ist nicht verfügbar. Bitte lade sie erneut hoch.")
+    receipts = [upload for upload in uploads.values() if upload.kind == "receipt"]
+    ensure_receipts_fit(
+        sum(upload.size for upload in receipts), sum(upload.pages for upload in receipts)
+    )
     return uploads
 
 

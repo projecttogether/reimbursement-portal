@@ -122,7 +122,8 @@ def test_pending_missing_or_oversized_receipts_block_acceptance(prepared):
     assert post(prepared).status_code == 400
     upload.state, upload.pages = "ready", 101
     upload.save()
-    assert post(prepared).status_code == 400
+    response = post(prepared)
+    assert response.status_code == 413 and "Seiten" in response.json()["error"]
 
 
 def test_no_anonymous_attachment_or_staff_routes(client, accepted):
