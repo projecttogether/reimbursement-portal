@@ -11,7 +11,6 @@ from django.http import Http404, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
-from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.http import url_has_allowed_host_and_scheme, urlencode
 from django.utils.text import slugify
@@ -573,12 +572,12 @@ STATUS_TONES = {
 }
 
 
+STATUS_LABELS = {**dict(Claim.State.choices), **DELIVERY_STATUS}
+
+
 def claim_status_parts(claim):
-    """The claim state, or the delivery state once a delivery exists."""
-    current = getattr(claim, "delivery", None)
-    if claim.state in {Claim.State.PURGING, Claim.State.PURGED} or current is None:
-        return claim.state, claim.get_state_display()
-    return current.state, DELIVERY_STATUS.get(current.state, current.state)
+    state = delivery.operator_status(claim).state
+    return state, STATUS_LABELS.get(state, state)
 
 
 def claim_status(claim):
@@ -731,16 +730,11 @@ class ClaimAdmin(admin.ModelAdmin):
 
     @admin.display(description="Fehler")
     def error(self, obj):
-        current = getattr(obj, "delivery", None)
-        return obj.error_code or (current.error_code if current else "") or "—"
+        return delivery.operator_status(obj).error_code or "—"
 
     @admin.display(description="Klärung")
     def overdue(self, obj):
-        if (
-            obj.resolution_due <= timezone.now()
-            and not obj.retention_due
-            and obj.state != Claim.State.PURGED
-        ):
+        if delivery.operator_status(obj).overdue:
             return render_component("badge", "Überfällig", variant="warning")
         return "—"
 
@@ -780,7 +774,6 @@ class ClaimAdmin(admin.ModelAdmin):
             else:
                 messages.success(request, "Die Verarbeitung wurde erneut gestartet.")
                 return redirect("admin:portal_claim_change", claim.pk)
-        current = getattr(claim, "delivery", None)
         return TemplateResponse(
             request,
             "admin/portal/claim/retry.html",
@@ -791,7 +784,7 @@ class ClaimAdmin(admin.ModelAdmin):
                 "claim": claim,
                 "status": claim_status(claim),
                 "status_badge": claim_status_badge(claim),
-                "duplicate_risk": bool(current and current.state != delivery.FAILED),
+                "duplicate_risk": delivery.operator_status(claim).duplicate_risk,
                 "form": form,
             },
         )

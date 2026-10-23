@@ -80,6 +80,11 @@ It requires explicit acknowledgment.
 **Participant status**: the one status vocabulary shown on the received page, with a
 `final` flag (`delivery.participant_status`).
 
+**Operator status**: what operators see of a claim in the admin area and in
+`claim_status`: the shown state (the delivery state once a delivery exists, unless
+content is being purged), the error code, whether resolution is overdue and whether a
+retry carries duplicate risk (`delivery.operator_status`).
+
 **Job**: queued work for one target (`services/queue.py`). A **job kind** (`validate`,
 `render`, `send` in `portal/job_kinds.py`) owns its target's transitions. The runner
 (`portal/jobs.py`) owns leases and the retry policy.

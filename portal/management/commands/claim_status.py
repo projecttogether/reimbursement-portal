@@ -1,10 +1,9 @@
 import json
 
 from django.core.management.base import BaseCommand
-from django.utils import timezone
 
 from portal.models import Claim, Job
-from portal.services import queue
+from portal.services import delivery, queue
 from portal.services.readiness import queue_age_seconds
 
 
@@ -25,18 +24,17 @@ class Command(BaseCommand):
         if options["delivery_state"]:
             claims = claims.filter(delivery__state=options["delivery_state"])
         for claim in claims.iterator(chunk_size=100):
-            delivery = getattr(claim, "delivery", None)
+            current = getattr(claim, "delivery", None)
+            status = delivery.operator_status(claim)
             self.stdout.write(
                 json.dumps(
                     {
                         "reference": claim.reference,
                         "state": claim.state,
                         "submitted_at": claim.submitted_at.isoformat(),
-                        "delivery_state": delivery.state if delivery else None,
-                        "error_code": claim.error_code or (delivery.error_code if delivery else ""),
-                        "resolution_overdue": claim.resolution_due <= timezone.now()
-                        and not claim.retention_due
-                        and claim.state != Claim.State.PURGED,
+                        "delivery_state": current.state if current else None,
+                        "error_code": status.error_code,
+                        "resolution_overdue": status.overdue,
                     }
                 )
             )

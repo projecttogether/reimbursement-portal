@@ -10,6 +10,7 @@ nothing reached the provider.
 import hashlib
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import timedelta
 
 from django.conf import settings
@@ -205,10 +206,15 @@ def mark_interrupted(delivery_id, error_code):
     refresh(delivery)
 
 
+def has_duplicate_risk(delivery):
+    """Sending again could reach Finance twice: only a definite failure is safe to repeat."""
+    return delivery.state != FAILED
+
+
 def retry(claim, *, acknowledge_duplicate_risk=False):
     """Operator retry. Only a definite failure is retried without acknowledgment."""
     delivery = Delivery.objects.select_for_update().get(claim=claim)
-    if delivery.state != FAILED and not acknowledge_duplicate_risk:
+    if has_duplicate_risk(delivery) and not acknowledge_duplicate_risk:
         raise DuplicateRisk
     delivery.state, delivery.error_code = PENDING, ""
     delivery.save()
@@ -223,6 +229,32 @@ def participant_status(claim):
     else:
         state = DELIVERY_FAILED if delivery.state == FAILED else delivery.state
     return state, state in FINAL_PARTICIPANT_STATES
+
+
+@dataclass(frozen=True)
+class OperatorStatus:
+    """What an operator sees of a claim in the admin area and in `claim_status`."""
+
+    # The claim state, or the delivery state once a delivery exists, unless being purged.
+    state: str
+    error_code: str
+    # Unresolved past its resolution date: neither delivered nor purged.
+    overdue: bool
+    # A retry must acknowledge that Finance could receive the claim twice.
+    duplicate_risk: bool
+
+
+def operator_status(claim, *, now=None):
+    delivery = getattr(claim, "delivery", None)
+    purging = claim.state in {Claim.State.PURGING, Claim.State.PURGED}
+    return OperatorStatus(
+        state=claim.state if delivery is None or purging else delivery.state,
+        error_code=claim.error_code or (delivery.error_code if delivery else ""),
+        overdue=claim.resolution_due <= (now or timezone.now())
+        and not claim.retention_due
+        and claim.state != Claim.State.PURGED,
+        duplicate_risk=bool(delivery and has_duplicate_risk(delivery)),
+    )
 
 
 @transaction.atomic

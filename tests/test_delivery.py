@@ -362,3 +362,46 @@ def test_participant_sees_one_status_vocabulary(
         )
     result = client.get(f"{response.json()['receipt_url']}?format=json").json()
     assert (result["state"], result["final"]) == (status, final)
+
+
+def test_operator_status_shows_the_delivery_until_content_is_purged(accepted, delivery):
+    accepted.refresh_from_db()
+    assert deliveries.operator_status(accepted).state == "pending"
+    Delivery.objects.filter(pk=delivery.pk).update(state="failed", error_code="hard_bounce")
+    accepted.refresh_from_db()
+    status = deliveries.operator_status(accepted)
+    assert (status.state, status.error_code, status.duplicate_risk) == (
+        "failed",
+        "hard_bounce",
+        False,
+    )
+    accepted.state = Claim.State.PURGING
+    assert deliveries.operator_status(accepted).state == Claim.State.PURGING
+
+
+def test_operator_status_without_delivery_shows_the_claim_and_its_error(accepted):
+    accepted.state, accepted.error_code = Claim.State.FAILED, "document_process_failed"
+    status = deliveries.operator_status(accepted)
+    assert (status.state, status.error_code) == (Claim.State.FAILED, "document_process_failed")
+    assert not status.duplicate_risk
+
+
+@pytest.mark.parametrize("state", ["pending", "provider_accepted", "send_unknown", "delivered"])
+def test_duplicate_risk_is_what_a_retry_refuses_without_acknowledgment(delivery, state):
+    Delivery.objects.filter(pk=delivery.pk).update(state=state)
+    claim = Claim.objects.select_related("delivery").get(pk=delivery.claim_id)
+    assert deliveries.operator_status(claim).duplicate_risk
+    with pytest.raises(deliveries.DuplicateRisk):
+        deliveries.retry(claim)
+
+
+def test_unresolved_claims_are_overdue_until_delivered_or_purged(accepted):
+    later = accepted.resolution_due + timedelta(seconds=1)
+    assert not deliveries.operator_status(
+        accepted, now=accepted.resolution_due - timedelta(1)
+    ).overdue
+    assert deliveries.operator_status(accepted, now=later).overdue
+    accepted.retention_due = later
+    assert not deliveries.operator_status(accepted, now=later).overdue
+    accepted.retention_due, accepted.state = None, Claim.State.PURGED
+    assert not deliveries.operator_status(accepted, now=later).overdue
