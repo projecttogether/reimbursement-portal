@@ -786,7 +786,7 @@
       const data = {
         draft_id: config.draft_id,
         token: config.token,
-        config_version: config.config_version,
+        revision: config.revision,
         signature: signature.id,
         declaration: true,
         privacy_acknowledged: true,

@@ -236,6 +236,8 @@ def test_uploads_and_submission_share_the_editable_draft_rule(
     form = prepared["form"]
     if change == "closed":
         form.status = Form.Status.DRAFT
+    else:
+        form.purpose_options = "Neue Vorgabe"
     form.save()
     upload = prepared["client"].post(
         "/f/test/uploads/",

@@ -30,3 +30,17 @@ def test_component_renders_a_link_and_escapes_attributes():
 def test_unknown_components_fail_loudly():
     with pytest.raises(TemplateSyntaxError):
         render('{% component "carousel" %}{% endcomponent %}')
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "version"),
+    [({"revision": "0123456789abcdef"}, "0123456789abcdef"), ({"config_version": 7}, "7")],
+)
+def test_pdf_summary_names_the_form_version_of_new_and_older_claims(accepted, snapshot, version):
+    from django.template.loader import render_to_string
+
+    accepted.snapshot = snapshot
+    html = render_to_string(
+        "portal/summary.html", {"claim": accepted, "expenses": [], "signature_uri": ""}
+    )
+    assert f"Formularversion {version}" in html

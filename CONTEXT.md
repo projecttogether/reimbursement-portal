@@ -12,8 +12,13 @@ template sets, such as KST, KTR or an ID; participants never see them, the PDF d
 
 **Form** (Formular): a published reimbursement form at `/f/<slug>/`, created from a
 template by its owners. It holds the internal values, purpose options, instructions,
-recipient, contact, opening times and its configuration revision. Saving the form,
-its template or a new privacy notice increments the revision.
+recipient, contact and opening times.
+
+**Revision**: a digest of what a participant agrees to and is validated against: the
+declaration, the privacy notice version, the purpose options, the travel mode and the
+mileage rate (`Form.revision`). It is derived, never stored on the form, so no save
+path can forget it. Other edits, such as wording, opening times, internal values and
+contacts, leave open drafts working; the claim snapshot records them at acceptance.
 
 **Start page form**: the one form marked *Startseite* (`Form.primary`), chosen by
 template admins. `/` redirects to it while it is open, and otherwise shows a short

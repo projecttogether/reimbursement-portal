@@ -39,7 +39,7 @@ def get_or_create_draft(request, form):
         draft
         and not draft.claim_id
         and draft.expires_at > timezone.now()
-        and draft.config_version == form.config_version
+        and draft.revision == form.revision()
     ):
         return draft, current["token"]
     if (
@@ -69,7 +69,7 @@ def get_or_create_draft(request, form):
         form=form,
         session_hash=binding,
         token_hash=digest(token),
-        config_version=form.config_version,
+        revision=form.revision(),
     )
     request.session[f"draft:{form.slug}"] = {"id": str(draft.id), "token": token}
     return draft, token
@@ -91,13 +91,13 @@ def authorize_draft(request, draft_id, token, form_slug, *, lock=False):
     return draft
 
 
-def ensure_accepting(draft, form, form_version):
+def ensure_accepting(draft, form, revision):
     """The draft can still change: not submitted, form open, same configuration revision."""
     if draft.claim_id:
         raise IntakeError("Dieses Formular wurde bereits eingereicht.", status=409)
     if not form.is_open():
         raise IntakeError("Dieses Formular ist für neue Anträge geschlossen.", status=409)
-    if form_version != draft.config_version or form.config_version != draft.config_version:
+    if revision != draft.revision or form.revision() != draft.revision:
         raise IntakeError(
             "Das Formular wurde aktualisiert. Bitte lade es neu und prüfe die Angaben erneut.",
             status=409,

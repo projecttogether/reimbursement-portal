@@ -57,9 +57,7 @@ def accept(request, form_slug, *, file, kind, expense_id, draft_id, token):
     try:
         with transaction.atomic():
             draft = authorize_draft(request, draft_id, token, form_slug, lock=True)
-            ensure_accepting(
-                draft, Form.objects.get(pk=draft.form_id), form_version=draft.config_version
-            )
+            ensure_accepting(draft, Form.objects.get(pk=draft.form_id), revision=draft.revision)
             count = draft.uploads.filter(kind=kind, expense_id=expense_id).count()
             if (
                 count

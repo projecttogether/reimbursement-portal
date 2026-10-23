@@ -43,7 +43,9 @@ def test_acceptance_snapshots_form_and_uses_exact_decimal_totals(prepared):
 
 def test_repeated_post_returns_one_claim_even_after_form_closes(prepared):
     first = post(prepared)
-    Form.objects.filter(pk=prepared["form"].pk).update(status=Form.Status.DRAFT, config_version=2)
+    Form.objects.filter(pk=prepared["form"].pk).update(
+        status=Form.Status.DRAFT, purpose_options="Neue Vorgabe"
+    )
     second = post(prepared)
     assert first.json() == second.json()
     assert Claim.objects.count() == 1
@@ -94,7 +96,13 @@ def test_cross_session_files_receipt_and_form_token_are_private(prepared):
 
 
 def test_stale_configuration_requires_review_again(prepared):
-    Form.objects.filter(pk=prepared["form"].pk).update(config_version=2)
+    Form.objects.filter(pk=prepared["form"].pk).update(purpose_options="Neue Vorgabe")
+    assert post(prepared).status_code == 409
+    assert not Claim.objects.exists()
+
+
+def test_a_forged_revision_is_rejected(prepared):
+    prepared["data"]["revision"] = "0" * 16
     assert post(prepared).status_code == 409
     assert not Claim.objects.exists()
 

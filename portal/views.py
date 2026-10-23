@@ -91,7 +91,7 @@ def form_page(request, form_slug):
     configuration = {
         "draft_id": str(draft.id) if draft else "",
         "token": token,
-        "config_version": draft.config_version if draft else form.config_version,
+        "revision": draft.revision if draft else form.revision(),
         "preview": preview,
         "sepa_countries": sorted(SEPA_COUNTRIES),
         "travel": template.travel,

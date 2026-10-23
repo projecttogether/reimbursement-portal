@@ -149,7 +149,7 @@ def submit_claim(request, form_slug, data):
                 "Dieses Formular wurde bereits mit anderen Angaben eingereicht.", status=409
             )
         return draft.claim
-    ensure_accepting(draft, form, form_version=data.get("config_version"))
+    ensure_accepting(draft, form, revision=data.get("revision"))
     if not recipient_approved(form.recipient):
         raise IntakeError("Das Formular ist derzeit nicht verfügbar.", status=503)
     payload, total = normalized_payload(data, form)

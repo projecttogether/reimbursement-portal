@@ -1,3 +1,4 @@
+import json
 import time
 import uuid
 from urllib.parse import parse_qs, urlsplit
@@ -336,12 +337,24 @@ def test_autosave_preserves_published_status_and_rejects_invalid_settings(admin_
     assert response.status_code == 200 and response.json()["status"] == "published"
     form.refresh_from_db()
     assert form.name == "Aktualisiert" and form.is_open()
-    version = form.config_version
     response = admin_client.post(url, form_settings(form, name="Nicht speichern", value_kst=""))
     assert response.status_code == 400
     form.refresh_from_db()
-    assert form.name == "Aktualisiert" and form.config_version == version
+    assert form.name == "Aktualisiert" and form.field_values["kst"]
     assert form.status == Form.Status.PUBLISHED
+
+
+def test_autosaving_a_published_form_keeps_open_drafts_accepting(admin_client, prepared):
+    form = prepared["form"]
+    url = f"/admin/portal/form/{form.pk}/change/"
+    changes = {"instructions": "Tippfehler korrigiert", "closes_at_0": "2099-01-01"}
+    for _ in range(3):
+        response = admin_client.post(url, form_settings(form, **changes, closes_at_1="12:00:00"))
+        assert response.status_code == 200, response.content
+    response = prepared["client"].post(
+        "/f/test/submit/", data=json.dumps(prepared["data"]), content_type="application/json"
+    )
+    assert response.status_code == 202, response.content
 
 
 def test_publication_keeps_the_opening_schedule(admin_client, form):

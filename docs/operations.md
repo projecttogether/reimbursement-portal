@@ -31,9 +31,11 @@ proxy replaces forwarded protocol headers. Configure:
 - Persistent encrypted database/private storage volumes and an independent,
   encrypted off-host backup destination. Backup keys remain outside Git.
 
-Every saved change to a form, its template or the privacy notice increments the
-form's revision. Unsubmitted forms from an older revision must reload and review
-again; accepted claims keep their original configuration snapshot. Stop web and
+A change to what participants agree to or are validated against (the declaration,
+the privacy notice, purpose options, travel mode or mileage rate) gives the form a new
+revision. Unsubmitted forms from an older revision must reload and review again; other
+edits, such as autosaved wording or opening times, leave them open. Accepted claims
+keep their original configuration snapshot. Stop web and
 worker before migrations, then replace both with the new image. Old workers must
 not create reservations during this upgrade.
 

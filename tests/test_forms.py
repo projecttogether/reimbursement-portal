@@ -21,6 +21,13 @@ def post(prepared, data=None):
     )
 
 
+def reopened(prepared):
+    """The participant reloads after a configuration change and works on the new revision."""
+    revision = Form.objects.get(pk=prepared["form"].pk).revision()
+    Draft.objects.filter(pk=prepared["draft"].pk).update(revision=revision)
+    prepared["data"]["revision"] = revision
+
+
 def rejected(prepared, field):
     response = post(prepared)
     assert response.status_code == 400, response.content
@@ -53,7 +60,7 @@ def test_landing_page_redirects_to_the_open_primary_form(client, form, template)
         primary=True,
     )
     form.refresh_from_db()
-    assert not form.primary and form.config_version == 3
+    assert not form.primary
     assert client.get("/").headers["Location"] == f"/f/{other.slug}/"
 
 
@@ -144,9 +151,7 @@ def test_purpose_options_restrict_the_choice_and_keep_details(prepared):
     form = prepared["form"]
     form.purpose_options = "Teilnahme an der Werkstatt\nMitwirkung als Referent:in"
     form.save()
-    prepared["data"]["config_version"] = form.config_version
-    prepared["draft"].config_version = form.config_version
-    prepared["draft"].save()
+    reopened(prepared)
     rejected(prepared, "purpose")
     prepared["data"]["purpose"] = "Mitwirkung als Referent:in"
     prepared["data"]["purpose_details"] = "Workshop zu Engagement"
@@ -175,6 +180,7 @@ def test_trip_needs_destination_and_dates(prepared, missing):
 
 def test_required_travel_ignores_the_participant_choice(prepared):
     FormTemplate.objects.filter(pk=prepared["form"].template_id).update(travel="required")
+    reopened(prepared)
     prepared["data"].update(is_trip=False, trip_destination="")
     rejected(prepared, "trip_destination")
 
@@ -226,20 +232,46 @@ def test_invalid_mileage_rows_are_rejected(prepared, changes):
 
 def test_mileage_needs_a_template_that_allows_it(prepared):
     FormTemplate.objects.filter(pk=prepared["form"].template_id).update(mileage_enabled=False)
+    reopened(prepared)
     prepared["data"]["expenses"].append(mileage_row())
     assert post(prepared).status_code == 400
 
 
-def test_template_and_privacy_changes_make_open_drafts_reload(prepared):
+def test_edits_that_change_nothing_a_participant_agreed_to_keep_drafts_open(prepared):
+    form, template = prepared["form"], prepared["form"].template
+    form.instructions, form.name, form.support_email = "Neu", "Umbenannt", "neu@example.invalid"
+    form.field_values["kst"] = "4321"
+    form.save()
+    template.intro, template.description = "Neue Hinweise", "Intern"
+    template.save()
+    TemplateField.objects.create(template=template, key="id", label="ID", required=False)
+    assert post(prepared).status_code == 202
+    assert ["Kostenstelle (KST)", "4321"] in Claim.objects.get().snapshot["internal_values"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda form: setattr(form.template, "declaration", "Neue Erklärung."),
+        lambda form: setattr(form.template, "declaration_version", "2"),
+        lambda form: setattr(form.template, "travel", FormTemplate.Travel.REQUIRED),
+        lambda form: setattr(form.template, "mileage_rate", Decimal("0.35")),
+        lambda form: setattr(form.template, "mileage_enabled", False),
+        lambda form: setattr(form, "purpose_options", "Teilnahme"),
+    ],
+)
+def test_changes_a_participant_agreed_to_make_open_drafts_reload(prepared, change):
     form = prepared["form"]
-    before = form.config_version
+    change(form)
     form.template.save()
-    form.refresh_from_db()
-    assert form.config_version > before
-    TemplateField.objects.create(template=form.template, key="id", label="ID", required=False)
+    form.save()
+    response = post(prepared)
+    assert response.status_code == 409 and "aktualisiert" in response.json()["error"]
+    assert not Claim.objects.exists()
+
+
+def test_a_new_privacy_notice_makes_open_drafts_reload(prepared):
     PrivacyNotice.objects.create(text="Neue Fassung.")
-    form.refresh_from_db()
-    assert form.config_version >= before + 3
     assert post(prepared).status_code == 409
 
 
@@ -273,7 +305,6 @@ def test_form_closes_when_its_template_gains_a_required_value(prepared):
     TemplateField.objects.create(template=form.template, key="id", label="ID")
     form.refresh_from_db()
     assert form.internal_value_errors() == ["ID"] and not form.is_open()
-    prepared["data"]["config_version"] = form.config_version
     assert post(prepared).status_code == 409
     assert prepared["client"].get("/f/test/").status_code == 403
     form.field_values["id"] = "WS-1"
