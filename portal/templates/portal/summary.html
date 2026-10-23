@@ -21,7 +21,7 @@ table.details th { overflow-wrap: break-word; } .box table.details th { width: 4
 <body>
 <div class="eyebrow">ProjectTogether gGmbH · Erstattung privat verauslagter Kosten</div>
 <h1>Erstattungsformular</h1>
-<p class="meta">Referenz {{ claim.reference }}<br>Eingereicht am {{ claim.submitted_at|date:"d.m.Y H:i T" }} · Formularversion {{ claim.snapshot.config_version }}</p>
+<p class="meta">Referenz {{ claim.reference }}<br>Eingereicht am {{ claim.submitted_at|date:"d.m.Y H:i T" }} · Formularversion {% firstof claim.snapshot.revision claim.snapshot.config_version %}</p>
 <table class="columns"><tr><td style="width: 58%">
 <h2>Angaben zur Person</h2>
 <table class="details">

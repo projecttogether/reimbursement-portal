@@ -19,10 +19,9 @@ from portal.intake import (
     parse_amount,
     parse_distance,
 )
-from portal.models import Claim, Expense, Form
-from portal.services import queue, uploads
-from portal.services.delivery import recipient_approved
-from portal.services.drafts import authorize_draft, digest, ensure_accepting
+from portal.models import Claim, Expense
+from portal.services import drafts, queue, uploads
+from portal.services.drafts import digest
 
 
 def _text(row, key, *, required=True):
@@ -129,29 +128,29 @@ def normalized_payload(data, form):
 
 
 @transaction.atomic
-def submit_claim(request, form_slug, data):
+def submit_claim(participant, form_slug, data):
+    """Accept the participant's draft as a claim; a repeated identical request returns it."""
     if not isinstance(data, dict) or data.get("website"):
         raise IntakeError("Ungültige Anfrage.")
-    draft = authorize_draft(request, data.get("draft_id"), data.get("token"), form_slug, lock=True)
-    form = (
-        Form.objects.select_for_update(of=("self",))
-        .select_related("template")
-        .get(pk=draft.form_id)
-    )
     # Compare an exact canonical request on replay, even if the form changed or closed later.
     replay_data = {key: value for key, value in data.items() if key not in {"token", "website"}}
     payload_hash = digest(
         json.dumps(replay_data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     )
-    if draft.claim_id:
-        if not constant_time_compare(draft.payload_hash, payload_hash):
+    try:
+        draft, form = drafts.gate(
+            participant, form_slug, data.get("draft_id"), data.get("token"), drafts.SUBMIT
+        )
+    except drafts.AlreadySubmitted as submitted:
+        if not constant_time_compare(submitted.draft.payload_hash, payload_hash):
             raise IntakeError(
                 "Dieses Formular wurde bereits mit anderen Angaben eingereicht.", status=409
-            )
-        return draft.claim
-    ensure_accepting(draft, form, form_version=data.get("config_version"))
-    if not recipient_approved(form.recipient):
-        raise IntakeError("Das Formular ist derzeit nicht verfügbar.", status=503)
+            ) from None
+        return submitted.draft.claim
+    # A privacy notice published since the gate's check must not enter this claim.
+    snapshot = form.snapshot()
+    if snapshot["revision"] != draft.revision:
+        raise drafts.Outdated()
     payload, total = normalized_payload(data, form)
     all_ids = [file_id for row in payload["expenses"] for file_id in row["uploads"]] + [
         payload["signature"]
@@ -160,13 +159,6 @@ def submit_claim(request, form_slug, data):
     signature = files[payload["signature"]]
     if signature.kind != "signature":
         raise IntakeError("Eine Datei ist nicht verfügbar. Bitte lade sie erneut hoch.")
-    if (
-        sum(upload.size for upload in files.values() if upload.kind == "receipt")
-        > settings.MAX_SUBMISSION_BYTES
-        or sum(upload.pages for upload in files.values() if upload.kind == "receipt")
-        > settings.MAX_CLAIM_PAGES
-    ):
-        raise IntakeError(message("claim_too_large"))
     if Expense.objects.filter(id__in=[row["id"] for row in payload["expenses"]]).exists():
         raise IntakeError("Ungültige Positionskennung. Bitte öffne ein neues Formular.", status=409)
     fields = {
@@ -176,7 +168,7 @@ def submit_claim(request, form_slug, data):
     }
     claim = Claim.objects.create(
         form=form,
-        snapshot=form.snapshot(),
+        snapshot=snapshot,
         total=total,
         resolution_due=timezone.now() + timedelta(days=settings.CONTENT_RETENTION_DAYS),
         **fields,

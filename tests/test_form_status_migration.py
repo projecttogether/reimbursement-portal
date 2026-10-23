@@ -35,3 +35,40 @@ def test_existing_forms_keep_their_publication_state_when_migrating():
         assert dict(Form.objects.values_list("slug", "active")) == {"open": True, "closed": False}
     finally:
         MigrationExecutor(connection).migrate(after)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_open_drafts_of_the_current_configuration_survive_the_revision_migration():
+    from portal.models import Form
+
+    before = [("portal", "0004_form_status")]
+    after = [("portal", "0005_form_revision")]
+    executor = MigrationExecutor(connection)
+    executor.migrate(before)
+    try:
+        apps = executor.loader.project_state(before).apps
+        apps.get_model("portal", "PrivacyNotice").objects.create(version=7, text="Hinweis")
+        template = apps.get_model("portal", "FormTemplate").objects.create(
+            name="Migration", mileage_enabled=True
+        )
+        old = apps.get_model("portal", "Form").objects.create(
+            template=template,
+            name="Alt",
+            slug="alt",
+            recipient="finance@example.invalid",
+            support_email="finance@example.invalid",
+            purpose_options="A\n\nB ",
+            config_version=4,
+        )
+        Draft = apps.get_model("portal", "Draft")
+        for config_version in (4, 3):
+            Draft.objects.create(
+                form=old, session_hash="s", token_hash="t", config_version=config_version
+            )
+        executor = MigrationExecutor(connection)
+        executor.migrate(after)
+        Draft = executor.loader.project_state(after).apps.get_model("portal", "Draft")
+        current = Form.objects.get(slug="alt").revision()
+        assert sorted(Draft.objects.values_list("revision", flat=True)) == ["", current]
+    finally:
+        MigrationExecutor(connection).migrate(after)

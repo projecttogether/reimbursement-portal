@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,26 @@ from portal.models import (
     Upload,
 )
 from portal.services.storage import path_for
+
+
+@dataclass
+class Participant:
+    """An in-memory participant: a browser session and its remembered drafts."""
+
+    network: str = "192.0.2.1/32"
+    session: str | None = None
+    memory: dict = field(default_factory=dict)
+
+    def binding(self, *, create=False):
+        if self.session is None and create:
+            self.session = uuid.uuid4().hex
+        return self.session
+
+    def remembered(self, form_slug):
+        return self.memory.get(form_slug)
+
+    def remember(self, form_slug, draft_id, token):
+        self.memory[form_slug] = (str(draft_id), token)
 
 
 @pytest.fixture(autouse=True)
@@ -159,7 +180,6 @@ def prepared(client, form):
     data = {
         "draft_id": str(draft.id),
         "token": token,
-        "config_version": form.config_version,
         "full_name": "Alex Beispiel",
         "email": "participant@example.invalid",
         "street": "Teststraße 1",

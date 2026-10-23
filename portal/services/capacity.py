@@ -22,8 +22,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from portal.models import CapacityLock, Draft, Upload, WorkspaceReservation
-from portal.services import queue
-from portal.services.draft_limits import locked_budget
+from portal.services import network_budget, queue
 from portal.services.storage import new_workspace_key, path_for, workspace_root
 
 
@@ -80,8 +79,8 @@ def _check(additional):
         raise CapacityError("storage_capacity")
 
 
-def admit_upload(request, draft, size):
-    """Charge an upload to its draft and network, and reserve its normalized output.
+def admit_upload(network, draft, size):
+    """Charge an upload to its draft and client network, and reserve its normalized output.
 
     Returns the bytes to record as the new upload's `reserved_bytes`.
     """
@@ -91,15 +90,8 @@ def admit_upload(request, draft, size):
         or draft.upload_bytes + size > settings.MAX_UPLOAD_BYTES_PER_DRAFT
     ):
         raise CapacityError("draft_work_limit")
-    budget = locked_budget(request)
-    now = timezone.now()
-    if budget.upload_window_start <= now - timedelta(minutes=1):
-        budget.upload_window_start, budget.upload_window_count = now, 0
-    if (
-        budget.upload_count >= settings.MAX_UPLOADS_PER_NETWORK
-        or budget.upload_bytes + size > settings.MAX_UPLOAD_BYTES_PER_NETWORK
-        or budget.upload_window_count >= settings.MAX_UPLOADS_PER_NETWORK_PER_MINUTE
-    ):
+    # The caller's transaction refunds this charge if a later check fails.
+    if not network_budget.charge_upload(network, size):
         raise CapacityError("network_work_limit")
     reservation = settings.MAX_NORMALIZED_FILE_BYTES
     _check(size + reservation)
@@ -115,10 +107,6 @@ def admit_upload(request, draft, size):
     draft.upload_count += 1
     draft.upload_bytes += size
     draft.save(update_fields=["upload_count", "upload_bytes"])
-    budget.upload_count += 1
-    budget.upload_bytes += size
-    budget.upload_window_count += 1
-    budget.save()
     return reservation
 
 

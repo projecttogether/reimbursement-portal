@@ -1,3 +1,5 @@
+import hashlib
+import json
 import re
 import uuid
 from datetime import timedelta
@@ -44,12 +46,6 @@ class PrivacyNotice(models.Model):
         latest = PrivacyNotice.objects.aggregate(models.Max("version"))["version__max"] or 0
         self.version = latest + 1
         super().save(*args, **kwargs)
-        invalidate_drafts(Form.objects.all())
-
-
-def invalidate_drafts(forms):
-    """Open drafts of these forms must reload before they can be submitted."""
-    forms.update(config_version=models.F("config_version") + 1)
 
 
 class FormTemplate(models.Model):
@@ -85,7 +81,6 @@ class FormTemplate(models.Model):
         default=Decimal("0.30"),
         validators=[MinValueValidator(Decimal("0.01"))],
     )
-    config_version = models.PositiveIntegerField(default=1, editable=False)
     updated_at = models.DateTimeField("Geändert am", auto_now=True)
 
     class Meta:
@@ -95,12 +90,6 @@ class FormTemplate(models.Model):
 
     def __str__(self):
         return self.name
-
-    def save(self, *args, **kwargs):
-        if self.pk:
-            self.config_version += 1
-        super().save(*args, **kwargs)
-        invalidate_drafts(self.forms.all())
 
 
 class TemplateField(models.Model):
@@ -144,16 +133,6 @@ class TemplateField(models.Model):
 
     def options(self):
         return [line.strip() for line in self.choices.splitlines() if line.strip()]
-
-    def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
-        invalidate_drafts(self.template.forms.all())
-
-    def delete(self, *args, **kwargs):
-        forms = self.template.forms.all()
-        result = super().delete(*args, **kwargs)
-        invalidate_drafts(forms)
-        return result
 
     def clean(self):
         if self.pattern:
@@ -228,7 +207,6 @@ class Form(models.Model):
         related_name="owned_forms",
         verbose_name="Verantwortliche",
     )
-    config_version = models.PositiveIntegerField(default=1, editable=False)
     created_at = models.DateTimeField("Erstellt am", default=timezone.now, editable=False)
     updated_at = models.DateTimeField("Geändert am", auto_now=True)
 
@@ -272,10 +250,30 @@ class Form(models.Model):
         # Marking a second start page is a handover that save() performs, not a conflict.
         super().validate_constraints(exclude={*(exclude or ()), "primary"})
 
+    def revision(self):
+        """A digest of what a participant agrees to and what their entries are validated against.
+
+        A draft is opened against one revision and accepted only while the form keeps it: the
+        declaration, the privacy notice version, the purpose options, the travel mode and the
+        mileage rate. Wording, opening times, internal values and contacts change without
+        sending open drafts back; the claim snapshot records them at acceptance.
+        """
+        return self._revision(PrivacyNotice.current())
+
+    def _revision(self, notice):
+        template = self.template
+        configuration = {
+            "declaration": template.declaration,
+            "declaration_version": template.declaration_version,
+            "privacy_version": notice.version if notice else None,
+            "purpose_options": self.purpose_choices(),
+            "travel": template.travel,
+            "mileage_rate": f"{template.mileage_rate:.2f}" if template.mileage_enabled else None,
+        }
+        encoded = json.dumps(configuration, sort_keys=True, ensure_ascii=False).encode()
+        return hashlib.sha256(encoded).hexdigest()[:16]
+
     def save(self, *args, **kwargs):
-        # Every saved change makes open drafts reload, so nobody submits against old values.
-        if self.pk and not kwargs.get("update_fields"):
-            self.config_version += 1
         with transaction.atomic():
             if self.primary:
                 # Only one form is the start page; the previous one just stops being it.
@@ -306,7 +304,7 @@ class Form(models.Model):
             "declaration_version": template.declaration_version,
             "privacy_version": notice.version if notice else None,
             "mileage_rate": str(template.mileage_rate) if template.mileage_enabled else None,
-            "config_version": self.config_version,
+            "revision": self._revision(notice),
         }
 
 
@@ -327,7 +325,8 @@ class Draft(models.Model):
     form = models.ForeignKey(Form, on_delete=models.PROTECT)
     session_hash = models.CharField(max_length=64)
     token_hash = models.CharField(max_length=64)
-    config_version = models.PositiveIntegerField()
+    # The form's revision when the draft was opened; see Form.revision().
+    revision = models.CharField(max_length=16)
     created_at = models.DateTimeField(default=timezone.now)
     expires_at = models.DateTimeField(default=draft_expiry, db_index=True)
     claim = models.OneToOneField(

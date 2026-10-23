@@ -12,8 +12,20 @@ template sets, such as KST, KTR or an ID; participants never see them, the PDF d
 
 **Form** (Formular): a published reimbursement form at `/f/<slug>/`, created from a
 template by its owners. It holds the internal values, purpose options, instructions,
-recipient, contact, opening times and its configuration revision. Saving the form,
-its template or a new privacy notice increments the revision.
+recipient, contact and opening times.
+
+**Form publication** (`services/publication.py`): a form starts as a *draft* of a
+template and is *published* or *unpublished* by its owners. Every save validates the
+settings for the status the form has afterwards: a draft accepts gaps and gets a default
+name and slug; publishing needs complete settings. The first save of a new form is
+idempotent per *creation key*. Only template admins delete forms, and only drafts
+without claims. The form admin is the HTTP adapter over this module.
+
+**Revision**: a digest of what a participant agrees to and is validated against: the
+declaration, the privacy notice version, the purpose options, the travel mode and the
+mileage rate (`Form.revision`). It is derived, never stored on the form, so no save
+path can forget it. Other edits, such as wording, opening times, internal values and
+contacts, leave open drafts working; the claim snapshot records them at acceptance.
 
 **Start page form**: the one form marked *Startseite* (`Form.primary`), chosen by
 template admins. `/` redirects to it while it is open, and otherwise shows a short
@@ -25,9 +37,24 @@ claims record the version they acknowledged.
 **Admin roles** (`portal/roles.py`): *template admins* and *form editors*, granted at
 every PT Login sign-in from the Keycloak `groups` claim (`portal/auth.py`).
 
+**Form access**: template admins manage every form; form editors manage the forms
+they own. Everyone sees the claims of the forms they manage. The admin lists, object
+checks, search and the owner preview all ask `roles.managed_forms` and
+`roles.visible_claims`.
+
 **Draft**: one participant's unsubmitted form, bound to a browser session and a secret
-token. A draft is *accepting* while it is unsubmitted, its form is open, and its
-revision matches the form's (`services/drafts.py`).
+token. A draft is *accepting* while it is unsubmitted and its form is open, available
+(an approved recipient and a privacy notice) and on the draft's revision
+(`services/drafts.py`).
+
+**Draft gate** (`drafts.gate`): the one check every participant action passes before it
+touches a draft: reading an upload, removing one, uploading and submitting. Its
+`Action` says which checks run and what is locked. Submitting a draft that is already a
+claim raises `AlreadySubmitted`, which submit turns into a replay.
+
+**Participant** (`portal/participants.py`): the session binding and client network
+behind a request. Drafts, uploads and submissions take a Participant rather than the
+request; `RequestParticipant` adapts a request.
 
 **Claim**: the immutable record created when a draft is accepted. Its states are
 `received → rendering → ready`, or `processing_failed`, then `purging → purged`.
@@ -46,6 +73,16 @@ validation runs or an execution workspace holds it (`services/uploads.py`).
 **Intake limits**: the file counts, sizes, page limits, amount and distance formats
 and participant messages that the form, its script and server validation
 share (`portal/intake.py`). An **IntakeError** is a participant-facing rejection.
+
+**Upload admission** (`uploads.accept`): every limit an upload must pass, each with its
+message from intake: free storage, the file's kind, type and size, the Draft gate, the
+draft's files and receipt total, then the draft's and network's work budgets and disk
+capacity. Only the request size cap (middleware) comes earlier. Submit checks the chosen
+receipts against the same claim limits (`uploads.claimable`).
+
+**Network budget** (`services/network_budget.py`): the admission budget a client
+network shares across its new drafts and uploads, over a 24-hour and a one-minute
+window.
 
 **Authoritative PDF**: the single generated document (summary, signature, every receipt
 page) that Finance receives. Built by *document processing* (`services/documents.py`)
@@ -69,6 +106,11 @@ It requires explicit acknowledgment.
 
 **Participant status**: the one status vocabulary shown on the received page, with a
 `final` flag (`delivery.participant_status`).
+
+**Operator status**: what operators see of a claim in the admin area and in
+`claim_status`: the shown state (the delivery state once a delivery exists, unless
+content is being purged), the error code, whether resolution is overdue and whether a
+retry carries duplicate risk (`delivery.operator_status`).
 
 **Job**: queued work for one target (`services/queue.py`). A **job kind** (`validate`,
 `render`, `send` in `portal/job_kinds.py`) owns its target's transitions. The runner
@@ -94,3 +136,4 @@ the orphan sweep (`services/storage.py`).
 | Document runner | `SandboxedRunner`, `DirectRunner` (`UnavailableRunner` when misconfigured) | `documents.configured_runner()` |
 | Scanner | `ClamAVScanner`, `DisabledScanner` (`MisconfiguredScanner`) | `scanner.configured_scanner()` |
 | Disk measurement | `capacity.SystemDisk`, `tests.conftest.FakeDisk` | `capacity.disk` |
+| Participant | `participants.RequestParticipant`, `tests.conftest.Participant` | the participant views |

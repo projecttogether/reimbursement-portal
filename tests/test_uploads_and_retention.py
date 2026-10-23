@@ -34,7 +34,12 @@ def test_real_upload_is_validated_asynchronously(prepared, uploaded_file):
     upload.refresh_from_db()
     assert upload.state == "ready", upload.error_code
     assert upload.normalized_key.endswith(".jpg")
-    assert prepared["client"].get(result["status_url"]).json()["pages"] == 1
+    assert (
+        prepared["client"]
+        .get(result["status_url"], headers={"X-Draft-Token": prepared["data"]["token"]})
+        .json()["pages"]
+        == 1
+    )
 
 
 @pytest.mark.parametrize("kind", ["receipt", "signature"])
@@ -236,6 +241,8 @@ def test_uploads_and_submission_share_the_editable_draft_rule(
     form = prepared["form"]
     if change == "closed":
         form.status = Form.Status.DRAFT
+    else:
+        form.purpose_options = "Neue Vorgabe"
     form.save()
     upload = prepared["client"].post(
         "/f/test/uploads/",
@@ -253,3 +260,52 @@ def test_uploads_and_submission_share_the_editable_draft_rule(
     for response in [upload, submit]:
         assert response.status_code == 409
         assert message in response.json()["error"]
+
+
+def test_upload_status_and_removal_need_the_draft_token(prepared, uploaded_file):
+    client = prepared["client"]
+    response = client.post(
+        "/f/test/uploads/",
+        {
+            "draft_id": str(prepared["draft"].id),
+            "token": prepared["data"]["token"],
+            "kind": "receipt",
+            "expense_id": prepared["data"]["expenses"][0]["id"],
+            "file": uploaded_file,
+        },
+    )
+    result = response.json()
+    assert client.get(result["status_url"]).status_code == 404
+    assert client.delete(result["delete_url"], headers={"X-Draft-Token": "x"}).status_code == 404
+    assert Upload.objects.filter(pk=result["id"]).exists()
+    headers = {"X-Draft-Token": prepared["data"]["token"]}
+    assert client.delete(result["delete_url"], headers=headers).status_code == 200
+    assert not Upload.objects.filter(pk=result["id"]).exists()
+
+
+def test_a_form_whose_recipient_is_no_longer_approved_closes_before_any_upload(
+    client, form, settings
+):
+    settings.APPROVED_DELIVERY_RECIPIENTS = ["other@example.invalid"]
+    response = client.get("/f/test/")
+    assert response.status_code == 503
+    assert "nicht verfügbar" in response.content.decode()
+    assert not form.draft_set.exists()
+
+
+@pytest.mark.parametrize(("method", "status"), [("get", 404), ("delete", 200)])
+def test_an_upload_removed_concurrently_is_gone_not_an_error(prepared, monkeypatch, method, status):
+    from portal.services import drafts
+
+    upload = Upload.objects.get(kind="receipt")
+    original = drafts.gate
+
+    def racing(*args):
+        result = original(*args)
+        Upload.objects.filter(pk=upload.pk).delete()
+        return result
+
+    monkeypatch.setattr(drafts, "gate", racing)
+    path = f"/f/test/uploads/{upload.pk}/" + ("status/" if method == "get" else "")
+    headers = {"X-Draft-Token": prepared["data"]["token"]}
+    assert getattr(prepared["client"], method)(path, headers=headers).status_code == status
