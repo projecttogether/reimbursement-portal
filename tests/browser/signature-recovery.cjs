@@ -92,7 +92,8 @@ if (!fixtures)
   try {
     await page.goto(`${base}/f/demo/`);
     await page.locator("#id_purpose_0").check();
-    await page.locator("#id_is_trip").check();
+    await page.locator("#add-expense").click();
+    await page.locator("#receipt-travel summary").click();
     for (const [id, value] of Object.entries({
       id_full_name: "Alex Beispiel",
       id_street: "Teststraße 1",
@@ -108,7 +109,6 @@ if (!fixtures)
     const row = page.locator(".expense-card");
     for (const [field, value] of Object.entries({
       merchant: "Test Rail",
-      purpose: "Workshop",
       amount: "12,50",
     }))
       await row.locator(`[data-field="${field}"]`).fill(value);

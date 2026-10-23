@@ -53,3 +53,29 @@ def test_concurrent_fresh_sessions_share_one_creation_budget(form, settings):
     assert sorted(statuses) == [200, 429, 429, 429]
     assert Draft.objects.count() == 1
     assert DraftAdmission.objects.get().count == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_references_get_distinct_numbers_even_on_first_use():
+    if connection.vendor != "postgresql":
+        pytest.skip("Row-lock behavior requires PostgreSQL.")
+    from django.utils import timezone
+
+    from portal.services.references import allocate_reference
+
+    def allocate(_):
+        close_old_connections()
+        try:
+            return allocate_reference("werkstatt", "Alex Beispiel", timezone.now())
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        references = list(pool.map(allocate, range(4)))
+    assert len(set(references)) == 4
+    assert sorted(reference.rsplit("/", 1)[1] for reference in references) == [
+        "000001",
+        "000002",
+        "000003",
+        "000004",
+    ]

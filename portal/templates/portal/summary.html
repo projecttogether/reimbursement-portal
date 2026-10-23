@@ -38,16 +38,16 @@ table.details th { overflow-wrap: break-word; } .box table.details th { width: 4
 <tr><th>Vorlage</th><td>{{ claim.snapshot.template }}</td></tr>
 {% for label, value in claim.snapshot.internal_values %}<tr><th>{{ label }}</th><td>{{ value }}</td></tr>{% endfor %}
 </table></div></td></tr></table>
-<h2>Erläuterung zur Erfüllung satzungsmäßiger Zwecke</h2>
+<h2>Anlass/Bezug zum Projekt oder der Veranstaltung</h2>
 <table class="details">
-<tr><th>Erläuterung</th><td class="multiline">{{ claim.purpose }}</td></tr>
+<tr><th>Anlass/Projektbezug</th><td class="multiline">{{ claim.purpose }}</td></tr>
 {% if claim.purpose_details %}<tr><th>Ergänzung</th><td class="multiline">{{ claim.purpose_details }}</td></tr>{% endif %}
 {% if claim.trip_start %}<tr><th>Zielort</th><td>{{ claim.trip_destination }}</td></tr>
 <tr><th>Reisezeitraum</th><td>{{ claim.trip_start|date:"d.m.Y" }} bis {{ claim.trip_end|date:"d.m.Y" }}</td></tr>{% endif %}
 </table>
 <h2>Auslagenpositionen</h2>
 <table><colgroup><col style="width: 6%"><col style="width: 24%"><col style="width: 33%"><col style="width: 19%"><col style="width: 18%"></colgroup><thead><tr><th>Nr.</th><th>Geschäftspartner / Fahrt</th><th>Anlass/Zweck</th><th>Referenz</th><th class="amount">Betrag</th></tr></thead><tbody>
-{% for expense in expenses %}<tr><td>{{ forloop.counter }}</td>{% if expense.kind == "mileage" %}<td>Kilometerpauschale<br>{{ expense.travel_date|date:"d.m.Y" }}: {{ expense.route_from }} – {{ expense.route_to }}{% if expense.round_trip %} und zurück{% endif %}</td><td>{{ expense.purpose }}<br>{{ expense.billed_km }} km × {{ expense.mileage_rate|floatformat:2 }} EUR</td><td>—</td>{% else %}<td>{{ expense.merchant }}</td><td>{{ expense.purpose }}</td><td>{{ expense.receipt_reference|default:"—" }}</td>{% endif %}<td class="amount">{{ expense.amount|floatformat:2 }} EUR</td></tr>{% endfor %}
+{% for expense in expenses %}<tr><td>{{ forloop.counter }}</td>{% if expense.kind == "mileage" %}<td>Kilometerpauschale<br>{{ expense.travel_date|date:"d.m.Y" }}: {{ expense.route_from }} – {{ expense.route_to }}{% if expense.round_trip %}<br>Rückfahrt{% if expense.return_date %} am {{ expense.return_date|date:"d.m.Y" }}{% endif %}{% endif %}{% if expense.vehicle_registration %}<br>Kennzeichen: {{ expense.vehicle_registration }}{% endif %}</td><td>{{ expense.purpose }}<br>{{ expense.billed_km }} km × {{ expense.mileage_rate|floatformat:2 }} EUR</td><td>—</td>{% else %}<td>{{ expense.merchant }}</td><td>{{ expense.purpose }}</td><td>{{ expense.receipt_reference|default:"—" }}</td>{% endif %}<td class="amount">{{ expense.amount|floatformat:2 }} EUR</td></tr>{% endfor %}
 <tr class="total"><td></td><td colspan="3">Summe</td><td class="amount">{{ claim.total|floatformat:2 }} EUR</td></tr>
 </tbody></table>
 <p class="meta">Die Belege folgen in Positionsreihenfolge und innerhalb jeder Position in der gewählten Dateireihenfolge. PDF-Lesezeichen ordnen die Seiten den Positionen zu.</p>

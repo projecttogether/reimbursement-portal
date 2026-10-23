@@ -22,6 +22,7 @@ from portal.intake import (
 from portal.models import Claim, Expense
 from portal.services import drafts, queue, uploads
 from portal.services.drafts import digest
+from portal.services.references import allocate_reference
 
 
 def _text(row, key, *, required=True):
@@ -36,16 +37,16 @@ def _text(row, key, *, required=True):
 
 REQUIRED_MESSAGES = {
     "merchant": "Bitte gib den Geschäftspartner an.",
-    "purpose": "Bitte gib Anlass/Zweck an.",
+    "vehicle_registration": "Bitte gib das Kennzeichen des Fahrzeugs an.",
     "route_from": "Bitte gib den Startort der Fahrt an.",
     "route_to": "Bitte gib das Ziel der Fahrt an.",
 }
 
 
-def _expense(row, template):
+def _expense(row, template, purpose):
     """One cleaned expense row without its uploads, or ValueError."""
     kind = row.get("kind", Expense.Kind.RECEIPT)
-    item = {"kind": kind, "purpose": _text(row, "purpose")}
+    item = {"kind": kind, "purpose": purpose}
     if kind == Expense.Kind.RECEIPT:
         item["merchant"] = _text(row, "merchant")
         item["receipt_reference"] = _text(row, "receipt_reference", required=False)
@@ -62,12 +63,27 @@ def _expense(row, template):
     round_trip = row.get("round_trip", False)
     if not isinstance(round_trip, bool):
         raise ValueError("Ungültige Angabe zu Hin- und Rückfahrt.")
+    return_date = None
+    if round_trip:
+        try:
+            return_date = parse_date(row.get("return_date") or "")
+        except (TypeError, ValueError):
+            pass
+        if not return_date:
+            raise ValueError("Bitte gib das Rückfahrtdatum an.")
+        if return_date < travel_date:
+            raise ValueError("Das Rückfahrtdatum darf nicht vor der Hinfahrt liegen.")
     distance = parse_distance(row.get("distance_km"))
+    registration = _text(row, "vehicle_registration").upper()
+    if len(registration) > EXPENSE_FIELD_LENGTHS["vehicle_registration"]:
+        raise ValueError("Das Kennzeichen darf höchstens 20 Zeichen haben.")
     item.update(
         {
             "merchant": "",
             "receipt_reference": "",
             "travel_date": travel_date,
+            "return_date": return_date,
+            "vehicle_registration": registration,
             "route_from": _text(row, "route_from"),
             "route_to": _text(row, "route_to"),
             "distance_km": distance,
@@ -100,7 +116,7 @@ def normalized_payload(data, form):
             if row_id in row_ids:
                 raise ValueError("Positionen müssen unterschiedliche Kennungen haben.")
             row_ids.add(row_id)
-            item, minimum_files = _expense(row, form.template)
+            item, minimum_files = _expense(row, form.template, claim_form.cleaned_data["purpose"])
             ids = row.get("uploads")
             if (
                 not isinstance(ids, list)
@@ -166,8 +182,11 @@ def submit_claim(participant, form_slug, data):
         for key, value in payload.items()
         if key not in {"signature", "expenses", "declaration", "privacy_acknowledged", "is_trip"}
     }
+    submitted_at = timezone.now()
     claim = Claim.objects.create(
         form=form,
+        submitted_at=submitted_at,
+        bookkeeping_reference=allocate_reference(form.slug, fields["full_name"], submitted_at),
         snapshot=snapshot,
         total=total,
         resolution_due=timezone.now() + timedelta(days=settings.CONTENT_RETENTION_DAYS),

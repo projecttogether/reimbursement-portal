@@ -15,10 +15,11 @@ from django.conf import settings
 AMOUNT_PATTERN = r"\d{1,9}(?:[,.]\d{1,2})?"
 EXPENSE_FIELD_LENGTHS = {
     "merchant": 200,
-    "purpose": 500,
+    "purpose": 3000,
     "receipt_reference": 100,
     "route_from": 200,
     "route_to": 200,
+    "vehicle_registration": 20,
 }
 # Kilometres of one mileage row, one way.
 MAX_DISTANCE_KM = 5000
@@ -113,6 +114,8 @@ def messages():
             f"höchstens {current.claim_pages} Belegseiten"
         ),
         "receipt_hint": (
+            "Eine Rechnung, Quittung oder ein Ticket, aus dem der Betrag und die Angaben "
+            "hervorgehen, reicht aus. Weitere Dateien sind optional. "
             f"Bis zu {current.files_per_expense} Dateien. "
             "Die Reihenfolge kannst du anschließend ändern."
         ),

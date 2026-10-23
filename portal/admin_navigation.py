@@ -93,7 +93,7 @@ def settings_tabs(request):
 
 
 def _claim(claim):
-    return claim.full_name or "Antrag", f"{claim.form.name} · {str(claim.id)[:8]}"
+    return claim.full_name or "Antrag", f"{claim.form.name} · {claim.reference}"
 
 
 def _form(form):

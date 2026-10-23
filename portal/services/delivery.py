@@ -161,7 +161,7 @@ def compose(attempt):
             "enthalten.\n"
         ),
         attachment=content,
-        filename=f"reimbursement_{claim.reference}.pdf",
+        filename=f"reimbursement_{claim.reference.replace('/', '_')}.pdf",
     )
 
 

@@ -8,13 +8,13 @@
   <span class="flex size-14 items-center justify-center rounded-full bg-success-background text-success" aria-hidden="true">{% icon "circle-check" class="size-7" %}</span>
   {% component "badge" variant="outline" %}{{ form.name }}{% endcomponent %}
   <h1 class="text-2xl font-semibold tracking-tight text-balance sm:text-3xl">Danke. Dein Antrag wurde eingereicht.</h1>
-  <p class="max-w-lg text-muted-foreground">Wir erstellen jetzt die vollständige PDF und senden sie an unser Finance-Team. Die Eingangsbestätigung ist noch keine Zusage zur Erstattung.</p>
+  <p class="max-w-lg text-muted-foreground">Deine Angaben und Belege sind eingegangen. Die Eingangsbestätigung ist noch keine Zusage zur Erstattung.</p>
   <div class="flex w-full max-w-md flex-col gap-1 rounded-lg border bg-muted/50 p-4">
     <span class="text-xs font-medium tracking-wide text-muted-foreground uppercase">Deine Referenz</span>
     <strong id="claim-reference" class="font-mono text-sm break-all select-all">{{ claim.reference }}</strong>
     <small class="text-xs text-muted-foreground">Bitte notiere die Referenz für Rückfragen.</small>
   </div>
   <p id="processing-status" class="flex items-center gap-2 text-sm font-medium" data-status="{{ status }}" data-final="{{ final|yesno:'true,false' }}" aria-live="polite">Dein Antrag wird verarbeitet.</p>
-  <p class="text-sm text-muted-foreground">Finance übernimmt die Prüfung und meldet sich bei Rückfragen.</p>
+  <p class="text-sm text-muted-foreground">Wir melden uns bei Rückfragen oder zahlen das Geld in der Regel binnen einer Woche aus.</p>
 </section>
 {% endblock %}{% block scripts %}<script src="{% static 'portal/received.js' %}" defer></script>{% endblock %}

@@ -8,7 +8,7 @@ from portal.services.readiness import queue_age_seconds
 
 
 class Command(BaseCommand):
-    help = "Inspect operational state without printing participant details."
+    help = "Inspect operational state without printing addresses or banking details."
 
     def add_arguments(self, parser):
         parser.add_argument("reference", nargs="?")
@@ -18,7 +18,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         claims = Claim.objects.select_related("delivery").order_by("submitted_at", "pk")
         if options["reference"]:
-            claims = claims.filter(pk=options["reference"])
+            claims = claims.for_reference(options["reference"])
         if options["state"]:
             claims = claims.filter(state=options["state"])
         if options["delivery_state"]:

@@ -79,6 +79,7 @@ def purge_claim(claim_id):
         ]:
             setattr(claim, field, "")
         claim.snapshot, claim.total = {}, None
+        claim.bookkeeping_reference = None
         claim.trip_start = claim.trip_end = None
         claim.pdf_size = claim.pdf_page_count = 0
         claim.state, claim.purged_at = Claim.State.PURGED, timezone.now()

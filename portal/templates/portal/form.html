@@ -43,35 +43,35 @@
   <section class="panel rounded-xl border bg-card text-card-foreground shadow-sm" aria-labelledby="section-purpose">
     {% include "portal/section_heading.html" with number="02" id="section-purpose" title="Anlass der Erstattung" text="Wofür sind die Auslagen entstanden?" %}
     <div class="flex flex-col gap-5 p-5 sm:p-6">
-      {% if configuration.purpose_options %}
+      {% if configuration.fixed_purpose %}
+      <div class="field"><span class="text-sm font-medium">{{ claim_form.purpose.label }}</span><p class="rounded-lg bg-muted/50 p-4">{{ configuration.fixed_purpose }}</p>{{ claim_form.purpose }}<p class="field-error" id="error-purpose"></p></div>
+      {% include 'portal/field.html' with field=claim_form.purpose_details hint='Optional: Beschreibe, falls nötig, den Zusammenhang genauer.' %}
+      {% elif configuration.purpose_options %}
       <fieldset class="field choice-list"><legend class="mb-3">{{ claim_form.purpose.label }} <span class="required-mark" aria-hidden="true">*</span></legend>{% for radio in claim_form.purpose %}<label class="check-label" for="{{ radio.id_for_label }}">{{ radio.tag }}<span>{{ radio.choice_label }}</span></label>{% endfor %}<p class="field-error" id="error-purpose"></p></fieldset>
       {% include 'portal/field.html' with field=claim_form.purpose_details hint='Optional: Beschreibe, falls nötig, den Zusammenhang genauer.' %}
-      {% else %}{% include 'portal/field.html' with field=claim_form.purpose hint='Beschreibe den Zusammenhang mit dem Projekt oder der Veranstaltung.' %}{% endif %}
-      {% if template.travel != 'off' %}
-      {% if template.travel == 'optional' %}
-      <div class="flex flex-col gap-2 rounded-lg border p-4">
-        <label class="check-label font-medium" for="{{ claim_form.is_trip.id_for_label }}">{{ claim_form.is_trip }}<span>{{ claim_form.is_trip.label }}</span></label>
-        <p class="muted pl-7" id="trip-hint">{% if template.mileage_enabled %}Bei Kilometererstattung sind die Reiseangaben erforderlich.{% endif %}</p>
-      </div>
-      {% endif %}
-      <div class="grid gap-5 sm:grid-cols-2" id="trip-fields"{% if template.travel == 'optional' %} hidden{% endif %}>
-        {% include 'portal/field.html' with field=claim_form.trip_destination required=True wide=True %}
-        {% include 'portal/field.html' with field=claim_form.trip_start required=True %}
-        {% include 'portal/field.html' with field=claim_form.trip_end required=True %}
-      </div>
-      {% endif %}
+      {% else %}{% include 'portal/field.html' with field=claim_form.purpose %}{% endif %}
     </div>
   </section>
 
   <section class="panel rounded-xl border bg-card text-card-foreground shadow-sm" aria-labelledby="section-expenses">
-    {% include "portal/section_heading.html" with number="03" id="section-expenses" title="Auslagen & Belege" text="Eine Position pro Ausgabe. Alle Beträge in Euro. Alle Seiten deiner Belege werden übernommen." %}
+    {% include "portal/section_heading.html" with number="03" id="section-expenses" title="Auslagen & Belege" text="Lege eine oder mehrere Positionen an. Alle Beträge in Euro." %}
     <div class="flex flex-col gap-4 p-5 sm:p-6">
       <p class="flex items-start gap-2 text-sm text-muted-foreground">{% icon "paperclip" class="mt-0.5 size-4 shrink-0" %}<span>{{ intake_messages.upload_hint }}</span></p>
+      <p id="expenses-empty" class="text-sm text-muted-foreground">Lege eine Auslage mit Beleg oder eine Kilometererstattung an.</p>
       <div id="expenses" class="flex flex-col gap-4"></div>
       <div class="flex flex-wrap gap-2">
         {% component "button" variant="outline" type="button" id="add-expense" %}{% icon "plus" %}Auslage mit Beleg{% endcomponent %}
-        {% if configuration.mileage_rate %}{% component "button" variant="outline" type="button" id="add-mileage" %}{% icon "plus" %}Fahrt mit eigenem Fahrzeug{% endcomponent %}{% endif %}
+        {% if configuration.mileage_rate %}{% component "button" variant="outline" type="button" id="add-mileage" %}{% icon "plus" %}Kilometererstattung{% endcomponent %}{% endif %}
       </div>
+      {% if template.travel != 'off' %}
+      {% if template.travel == 'optional' %}<details id="receipt-travel" class="rounded-lg border p-4" hidden><summary class="text-sm font-medium">Reiseangaben für Auslagen mit Beleg ergänzen (optional)</summary>{% else %}<div id="receipt-travel" class="rounded-lg border p-4" hidden><p class="text-sm font-medium">Reiseangaben für Auslagen mit Beleg</p>{% endif %}
+        <div class="grid gap-5 pt-4 sm:grid-cols-2" id="trip-fields">
+          {% include 'portal/field.html' with field=claim_form.trip_destination required=True wide=True %}
+          {% include 'portal/field.html' with field=claim_form.trip_start required=True %}
+          {% include 'portal/field.html' with field=claim_form.trip_end required=True %}
+        </div>
+      {% if template.travel == 'optional' %}</details>{% else %}</div>{% endif %}
+      {% endif %}
       <div class="totals border-t pt-4" id="totals" aria-live="polite"></div>
     </div>
   </section>
@@ -128,7 +128,21 @@
 </div>
 </form>
 
-<template id="expense-template"><article class="expense-card" data-kind="receipt"><div class="expense-top"><h3><span class="row-number"></span> Auslage mit Beleg</h3><div class="row-actions"><button type="button" data-action="up" aria-label="Position nach oben verschieben">↑</button><button type="button" data-action="down" aria-label="Position nach unten verschieben">↓</button><button type="button" data-action="remove" class="remove-row">Entfernen</button></div></div><div class="grid gap-4 sm:grid-cols-2"><div class="field"><label>Name Geschäftspartner *<input data-field="merchant" maxlength="{{ field_lengths.merchant }}" required placeholder="z. B. Deutsche Bahn"></label></div><div class="field"><label>Anlass/Zweck *<input data-field="purpose" maxlength="{{ field_lengths.purpose }}" required placeholder="z. B. Zugfahrt zum Workshop"></label></div><div class="field"><label>Referenz/Rechnungsnr.<input data-field="receipt_reference" maxlength="{{ field_lengths.receipt_reference }}" placeholder="falls vorhanden"></label></div><div class="field"><label>Betrag in EUR *<input data-field="amount" inputmode="decimal" required placeholder="0,00" pattern="{{ amount_pattern }}"></label></div></div><div class="receipt-zone"><label class="upload-button">{% icon "upload" %}Belege hinzufügen<input type="file" class="receipt-input" accept="application/pdf,image/jpeg,image/png" multiple></label><small>{{ intake_messages.receipt_hint }}</small><ul class="file-list" aria-live="polite"></ul></div></article></template>
-<template id="mileage-template"><article class="expense-card" data-kind="mileage"><div class="expense-top"><h3><span class="row-number"></span> Fahrt mit eigenem Fahrzeug</h3><div class="row-actions"><button type="button" data-action="up" aria-label="Position nach oben verschieben">↑</button><button type="button" data-action="down" aria-label="Position nach unten verschieben">↓</button><button type="button" data-action="remove" class="remove-row">Entfernen</button></div></div><div class="grid gap-4 sm:grid-cols-2"><div class="field"><label>Datum der Fahrt *<input data-field="travel_date" type="date" required></label></div><div class="field"><label>Anlass/Zweck *<input data-field="purpose" maxlength="{{ field_lengths.purpose }}" required placeholder="z. B. Fahrt zur Werkstatt"></label></div><div class="field"><label>Start *<input data-field="route_from" maxlength="{{ field_lengths.route_from }}" required placeholder="Ort"></label></div><div class="field"><label>Ziel *<input data-field="route_to" maxlength="{{ field_lengths.route_to }}" required placeholder="Ort"></label></div><div class="field"><label>Entfernung (einfache Strecke, km) *<input data-field="distance_km" type="number" inputmode="numeric" min="1" max="{{ max_distance_km }}" step="1" required></label></div><div class="field justify-end"><label class="check-label inline-check"><input data-field="round_trip" type="checkbox"><span>Hin- und Rückfahrt</span></label><p class="mileage-amount muted" aria-live="polite"></p></div></div><div class="receipt-zone"><label class="upload-button">{% icon "upload" %}Nachweis hinzufügen (optional)<input type="file" class="receipt-input" accept="application/pdf,image/jpeg,image/png" multiple></label><small>Zum Beispiel ein Screenshot der Route.</small><ul class="file-list" aria-live="polite"></ul></div></article></template>
+<template id="expense-template"><article class="expense-card" data-kind="receipt"><div class="expense-top"><h3><span class="row-number"></span> Auslage mit Beleg</h3><div class="row-actions"><button type="button" data-action="up" aria-label="Position nach oben verschieben">↑</button><button type="button" data-action="down" aria-label="Position nach unten verschieben">↓</button><button type="button" data-action="remove" class="remove-row">Entfernen</button></div></div><div class="grid gap-4 sm:grid-cols-2"><div class="field"><label>Name Geschäftspartner *<input data-field="merchant" maxlength="{{ field_lengths.merchant }}" required placeholder="z. B. Deutsche Bahn"></label></div><div class="field"><label>Referenz/Rechnungsnr.<input data-field="receipt_reference" maxlength="{{ field_lengths.receipt_reference }}" placeholder="falls vorhanden"></label></div><div class="field"><label>Betrag in EUR *<input data-field="amount" inputmode="decimal" required placeholder="0,00" pattern="{{ amount_pattern }}"></label></div></div><div class="receipt-zone"><label class="upload-button">{% icon "upload" %}Beleg hinzufügen<input type="file" class="receipt-input" accept="application/pdf,image/jpeg,image/png" multiple></label><small>{{ intake_messages.receipt_hint }}</small><ul class="file-list" aria-live="polite"></ul></div></article></template>
+<template id="mileage-template">
+  <article class="expense-card" data-kind="mileage">
+    <div class="expense-top"><h3><span class="row-number"></span> Kilometererstattung</h3><div class="row-actions"><button type="button" data-action="up" aria-label="Position nach oben verschieben">↑</button><button type="button" data-action="down" aria-label="Position nach unten verschieben">↓</button><button type="button" data-action="remove" class="remove-row">Entfernen</button></div></div>
+    <div class="grid gap-4 sm:grid-cols-2">
+      <div class="field"><label>Datum der Hinfahrt *<input data-field="travel_date" type="date" required></label></div>
+      <div class="field"><label>Kennzeichen *<input data-field="vehicle_registration" maxlength="{{ field_lengths.vehicle_registration }}" required placeholder="z. B. B-PT 123"></label></div>
+      <div class="field"><label>Start *<input data-field="route_from" maxlength="{{ field_lengths.route_from }}" required placeholder="Ort"></label></div>
+      <div class="field"><label>Ziel *<input data-field="route_to" maxlength="{{ field_lengths.route_to }}" required placeholder="Ort"></label></div>
+      <div class="field"><label>Entfernung (einfache Strecke, km) *<input data-field="distance_km" type="number" inputmode="numeric" min="1" max="{{ max_distance_km }}" step="1" required></label></div>
+      <div class="field justify-end"><label class="check-label inline-check"><input data-field="round_trip" type="checkbox"><span>Hin- und Rückfahrt</span></label><p class="mileage-amount muted" aria-live="polite"></p></div>
+      <div class="field return-date" hidden><label>Rückfahrtdatum *<input data-field="return_date" type="date" disabled></label></div>
+    </div>
+    <div class="receipt-zone"><label class="upload-button">{% icon "upload" %}Nachweis hinzufügen (optional)<input type="file" class="receipt-input" accept="application/pdf,image/jpeg,image/png" multiple></label><small>Zum Beispiel ein Screenshot der Route.</small><ul class="file-list" aria-live="polite"></ul></div>
+  </article>
+</template>
 {{ configuration|json_script:'portal-configuration' }}
 {% endblock %}{% block scripts %}<script src="{% static 'portal/form.js' %}" defer></script>{% endblock %}

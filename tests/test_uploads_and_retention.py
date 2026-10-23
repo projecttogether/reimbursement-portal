@@ -140,6 +140,8 @@ def test_purge_removes_all_sensitive_fields_and_files(accepted):
     assert not accepted.iban and not accepted.email and not accepted.purpose
     assert accepted.snapshot == {} and accepted.total is None
     assert not accepted.street and not accepted.account_holder
+    assert accepted.bookkeeping_reference is None
+    assert accepted.reference == str(accepted.pk)
     assert not accepted.expenses.exists() and not accepted.uploads.exists()
     assert accepted.delivery.recipient == ""
     assert not accepted.delivery.attempts.exists()
