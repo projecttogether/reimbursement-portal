@@ -106,6 +106,12 @@ tracking.
    inactive; their owners can preview the link before activating them.
 3. Complete a synthetic claim. Check the internal values, all PDF pages, the
    signature, the recipient and the delivered status shown in the admin area.
+4. On the server, check that the web container's HTTPS router lists the
+   `reimbursement-portal-buffering` middleware in its
+   `traefik.http.routers.https-….middlewares` label (`docker inspect` shows the
+   container's labels). The two synchronous web workers rely
+   on Traefik receiving each request completely before forwarding it; without the
+   buffer, two slowly sent requests can make the portal unresponsive.
 
 Back up PostgreSQL and the private files together, encrypted and off-host. A Docker
 volume provides neither encryption nor a backup. Schedule
