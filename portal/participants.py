@@ -37,8 +37,9 @@ def client_network(request):
             peer = address
     if peer.version == 6 and peer.ipv4_mapped:
         peer = peer.ipv4_mapped
-    # IPv6 privacy addresses from the same /64 share a budget.
-    return str(ip_network(f"{peer}/{64 if peer.version == 6 else 32}", strict=False))
+    # An IPv6 site (/48) shares one budget: a single customer or tunnel gets
+    # thousands of /64s, which would otherwise count as separate networks.
+    return str(ip_network(f"{peer}/{48 if peer.version == 6 else 32}", strict=False))
 
 
 class RequestParticipant:
