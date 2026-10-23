@@ -531,6 +531,17 @@ def test_sidebar_shows_the_admin_section_only_to_template_admins(admin_client, c
     assert 'href="/admin/portal/formtemplate/"' not in page
 
 
+def test_only_template_admins_see_that_content_purge_is_disabled(admin_client, editor, settings):
+    notice = "Automatisches Löschen ist ausgeschaltet"
+    settings.DEPLOYMENT_ENV, settings.CONTENT_PURGE_ENABLED = "production", True
+    assert notice not in admin_client.get("/admin/portal/claim/").content.decode()
+    settings.CONTENT_PURGE_ENABLED = False
+    page = admin_client.get("/admin/portal/claim/").content.decode()
+    assert notice in page and "30 Tage nach dem Einreichen" in page
+    admin_client.force_login(editor)
+    assert notice not in admin_client.get("/admin/portal/claim/").content.decode()
+
+
 def suggestions(client, query):
     response = client.get("/admin/suche/vorschlaege/", {"q": query})
     assert response.status_code == 200

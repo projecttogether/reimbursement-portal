@@ -3,6 +3,7 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
+from portal.checks import retention_checks
 from portal.models import Claim, DeliveryAttempt
 from portal.services import delivery as deliveries
 from portal.services.retention import cleanup
@@ -60,3 +61,12 @@ def test_failed_delivery_keeps_the_pdf_for_resolution(delivery):
     cleanup(execute=True)
     claim.refresh_from_db()
     assert claim.pdf_key
+
+
+def test_production_warns_while_content_purge_is_disabled(settings):
+    settings.DEPLOYMENT_ENV, settings.CONTENT_PURGE_ENABLED = "production", False
+    assert [warning.id for warning in retention_checks(None)] == ["portal.W001"]
+    settings.CONTENT_PURGE_ENABLED = True
+    assert retention_checks(None) == []
+    settings.DEPLOYMENT_ENV, settings.CONTENT_PURGE_ENABLED = "staging", False
+    assert retention_checks(None) == []

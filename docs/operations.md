@@ -118,7 +118,10 @@ Finance must accept the selected handoff/deletion policy before setting
 `CONTENT_PURGE_ENABLED=1`. It defaults to `0`; abandoned uploads and orphan
 temporary files are still cleaned. `PDF_RETENTION_DAYS` (7) and
 `CONTENT_RETENTION_DAYS` (30) are the periods the privacy notice states; change
-both together with the notice. An already started purge always resumes.
+both together with the notice. An already started purge always resumes. While a
+production deployment runs with purge disabled, claims outlive those periods: the
+admin area warns template admins, and `migrate` and the worker report check
+`portal.W001` at startup.
 
 Run a complete dummy claim through the approved MailerSend/Moss route before
 launch. Check all pages, KST/KTR, declaration, signature, amounts, and compressed
