@@ -18,7 +18,7 @@ class ActionRefused(Exception):
 @transaction.atomic
 def retry(claim_id, *, actor, reason, acknowledge_duplicate_risk=False):
     """Retry a failed render, or send again. Possible duplicates need acknowledgment."""
-    claim = Claim.objects.select_for_update().get(pk=claim_id)
+    claim = Claim.objects.select_for_update().for_reference(claim_id).get()
     if not reason.strip():
         raise ActionRefused("reason_missing", "Bitte gib einen Grund an.")
     if queue.claim_has_active_job(claim):

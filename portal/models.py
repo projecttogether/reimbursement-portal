@@ -177,10 +177,11 @@ class Form(models.Model):
     name = models.CharField("Name", max_length=200, help_text="Für Teilnehmende sichtbar.")
     field_values = models.JSONField("Interne Werte", default=dict, blank=True)
     purpose_options = models.TextField(
-        "Vorgaben zur Erläuterung satzungsmäßiger Zwecke",
+        "Vorgaben zum Anlass/Projektbezug",
         blank=True,
         help_text=(
-            "Eine Option pro Zeile. Teilnehmende wählen eine Option und können sie ergänzen. "
+            "Eine Option pro Zeile. Eine einzelne Vorgabe wird als Text angezeigt; bei mehreren "
+            "wählen Teilnehmende eine Option. Eine Ergänzung ist optional. "
             "Leer lassen für Freitext."
         ),
     )
@@ -263,6 +264,7 @@ class Form(models.Model):
     def _revision(self, notice):
         template = self.template
         configuration = {
+            "intake_version": 2,
             "declaration": template.declaration,
             "declaration_version": template.declaration_version,
             "privacy_version": notice.version if notice else None,
@@ -337,7 +339,25 @@ class Draft(models.Model):
     upload_bytes = models.PositiveBigIntegerField(default=0)
 
 
+class ClaimReferenceCounter(models.Model):
+    """A permanent, participant-free sequence, including after claims are purged."""
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    value = models.PositiveBigIntegerField(default=0)
+
+
+class ClaimQuerySet(models.QuerySet):
+    def for_reference(self, reference):
+        try:
+            claim_id = uuid.UUID(str(reference))
+        except (ValueError, TypeError, AttributeError):
+            return self.filter(bookkeeping_reference=reference)
+        return self.filter(pk=claim_id)
+
+
 class Claim(models.Model):
+    objects = ClaimQuerySet.as_manager()
+
     class State(models.TextChoices):
         RECEIVED = "received", "Eingegangen"
         RENDERING = "rendering", "PDF wird erstellt"
@@ -361,6 +381,7 @@ class Claim(models.Model):
     bic = models.CharField(max_length=11, blank=True)
     purpose = models.TextField()
     purpose_details = models.TextField(blank=True)
+    bookkeeping_reference = models.CharField(max_length=200, null=True, unique=True, editable=False)
     trip_destination = models.CharField(max_length=200, blank=True)
     trip_start = models.DateField(null=True, blank=True)
     trip_end = models.DateField(null=True, blank=True)
@@ -396,7 +417,7 @@ class Claim(models.Model):
 
     @property
     def reference(self):
-        return str(self.id)
+        return self.bookkeeping_reference or str(self.id)
 
     @property
     def postal_address(self):
@@ -421,6 +442,10 @@ class Expense(models.Model):
         max_length=EXPENSE_FIELD_LENGTHS["receipt_reference"], blank=True
     )
     travel_date = models.DateField(null=True, blank=True)
+    return_date = models.DateField(null=True, blank=True)
+    vehicle_registration = models.CharField(
+        max_length=EXPENSE_FIELD_LENGTHS["vehicle_registration"], blank=True
+    )
     route_from = models.CharField(max_length=EXPENSE_FIELD_LENGTHS["route_from"], blank=True)
     route_to = models.CharField(max_length=EXPENSE_FIELD_LENGTHS["route_to"], blank=True)
     distance_km = models.PositiveIntegerField(null=True, blank=True)

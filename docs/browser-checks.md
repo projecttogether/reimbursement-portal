@@ -7,12 +7,18 @@ Run the worker alongside the web application. Never use production receipts.
    fields, expense cards, buttons, and totals fit without horizontal scrolling,
    and that filled fields share one font weight.
 2. Fill name, address, country, email, test IBAN `DE89370400440532013000`, and
-   check that the account holder follows the name. Choose a purpose option, tick
-   the trip checkbox and enter destination and trip dates.
-3. Add two positions, each with merchant, purpose, optional receipt reference, and
-   amount in euros. Enter `10,10` and `20,20`; confirm a `30,30 €` total. Add a
-   mileage position with 100 km and return trip and confirm `60,00 €`. Duplicate
-   references should warn without blocking submission.
+   check that the account holder follows the name. Choose a purpose option. A single
+   preset must appear as plain text. Section 02 has no travel checkbox. Confirm that
+   there are no expense rows initially; add a receipt row and open the optional
+   receipt-only travel details to enter destination and dates.
+3. Add two positions, each with merchant, optional receipt reference, and amount
+   in euros. The purpose is asked only once in section 02. Enter `10,10` and `20,20`; confirm a `30,30 €` total. Add a
+   mileage position with 100 km, number plate, outbound date and return trip with
+   return date and confirm `60,00 €`. Receipt-only travel questions must disappear.
+   A return date before departure must block review. Unchecking return trip hides
+   its date and halves the amount. Remove every row and confirm that review is
+   blocked. Submit a separate mileage-only claim without uploading a receipt.
+   Duplicate receipt references should warn without blocking submission.
 4. Upload mixed JPG/PNG/PDF receipts, including a multipage PDF. Wait for validation.
    Move rows and receipt files. Confirm the file ownership and displayed order.
 5. Try invalid amounts, missing fields, missing receipts, and an empty signature.
@@ -24,7 +30,8 @@ Run the worker alongside the web application. Never use production receipts.
 7. Submit once and try a double click. The receipt page must say
    "Dein Antrag wurde eingereicht", show one reference, processing progress, and
    no banking details. Opening the form link again starts a new, empty claim. Reload it and confirm the reference
-   remains the same. Another browser session must receive a 404 for that page.
+   remains the same. The readable reference follows
+   `Erst/YYYY-MM-DD/demo/beispiel/000001` and differs for repeated claims. Another browser session must receive a 404 for that page.
 8. Inspect the private local `.eml` attachment. Check summary fields, signature,
    exact totals, page completeness, row/file order, PDF bookmarks, and readability.
    Confirm the full serialized PDF is within the output limit.
@@ -37,7 +44,9 @@ The repeatable interaction smoke test is `tests/browser/smoke.cjs`. With Playwri
 available to Node, set `BASE_URL`, `FIXTURES_DIR` and `OUTPUT_DIR`, then run it with
 Node. Supply only synthetic `train.png`, two-page `hotel.pdf`, and `signature.png`
 fixtures. It verifies desktop/mobile completion, both signature paths, review
-reset, row/file association, totals, delivery, and cross-session receipt denial.
+reset, row/file association, mileage-only claims, totals, delivery, and cross-session
+receipt denial. Set `FORM_SLUG` to run against a different synthetic form, including
+a form with a single fixed purpose.
 
 Run `tests/browser/signature-recovery.cjs` with the same `BASE_URL` and
 `FIXTURES_DIR` to inject signature validation failures, polling errors, polling

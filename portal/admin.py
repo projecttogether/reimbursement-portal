@@ -573,7 +573,7 @@ class ClaimAdmin(admin.ModelAdmin):
         "overdue",
     ]
     list_filter = [("form", admin.RelatedOnlyFieldListFilter), "state", "delivery__state"]
-    search_fields = ["full_name", "email"]
+    search_fields = ["full_name", "email", "=bookkeeping_reference"]
     date_hierarchy = "submitted_at"
     inlines = [OperationInline]
     fieldsets = [
@@ -642,7 +642,7 @@ class ClaimAdmin(admin.ModelAdmin):
 
     @admin.display(description="Referenz", ordering="id")
     def short_reference(self, obj):
-        return str(obj.id)[:8]
+        return obj.bookkeeping_reference or str(obj.id)[:8]
 
     @admin.display(description="Status")
     def status(self, obj):

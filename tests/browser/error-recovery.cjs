@@ -61,7 +61,8 @@ if (!fixtures)
   async function fill(invalidField) {
     await page.goto(`${base}/f/demo/`);
     await page.locator("#id_purpose_0").check();
-    await page.locator("#id_is_trip").check();
+    await page.locator("#add-expense").click();
+    await page.locator("#receipt-travel summary").click();
     const values = {
       full_name: "Synthetic Reviewer",
       street: "Teststrasse 1",
@@ -80,7 +81,6 @@ if (!fixtures)
       await page.locator(`#id_${field}`).fill(value);
     for (const [field, value] of Object.entries({
       merchant: "Synthetic Rail",
-      purpose: "Synthetic travel",
       amount: "12,50",
     }))
       await page.locator(`[data-field="${field}"]`).fill(value);
@@ -134,6 +134,7 @@ if (!fixtures)
     polls = 0;
     uploads = 0;
     await page.goto(`${base}/f/demo/`);
+    await page.locator("#add-expense").click();
     await page
       .locator(".receipt-input")
       .setInputFiles(path.join(fixtures, "train.png"));
@@ -146,7 +147,7 @@ if (!fixtures)
       if (!route.request().url().includes("?format=json"))
         return route.fulfill({
           contentType: "text/html",
-          body: '<p id="processing-status" data-status="received"></p><script src="/static/portal/received.js"></script>',
+          body: '<meta charset="utf-8"><p id="processing-status" data-status="received"></p><script src="/static/portal/received.js"></script>',
         });
       receiptPolls++;
       return route.fulfill(

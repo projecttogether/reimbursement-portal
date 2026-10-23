@@ -53,7 +53,7 @@ class ClaimForm(forms.Form):
     iban = forms.CharField(label="IBAN", max_length=60)
     bic = forms.CharField(label="BIC", max_length=20, required=False)
     purpose = forms.CharField(
-        label="Erläuterung zur Erfüllung satzungsmäßiger Zwecke",
+        label="Anlass/Bezug zum Projekt oder der Veranstaltung",
         max_length=3000,
         widget=forms.Textarea(attrs={"rows": 4}),
     )
@@ -75,12 +75,24 @@ class ClaimForm(forms.Form):
         self.has_mileage = has_mileage
         super().__init__(*args, **kwargs)
         options = form.purpose_choices()
-        if options:
+        self.fixed_purpose = options[0] if len(options) == 1 else None
+        if self.fixed_purpose:
+            self.fields["purpose"].initial = self.fixed_purpose
+            self.fields["purpose"].disabled = True
+            self.fields["purpose"].widget = forms.HiddenInput()
+        elif options:
             self.fields["purpose"] = forms.ChoiceField(
                 label=self.fields["purpose"].label,
                 choices=[(option, option) for option in options],
                 widget=forms.RadioSelect,
             )
+        if (
+            has_mileage
+            or self.travel_mode == FormTemplate.Travel.OFF
+            or (self.travel_mode == FormTemplate.Travel.OPTIONAL and not self.data.get("is_trip"))
+        ):
+            for name in ["trip_destination", "trip_start", "trip_end"]:
+                self.fields[name].disabled = True
         for name, field in self.fields.items():
             field.widget.attrs["aria-describedby"] = f"error-{name}"
         for name, autocomplete in {
@@ -103,12 +115,10 @@ class ClaimForm(forms.Form):
         return self.portal_form.template.travel
 
     def travel_required(self):
-        if self.travel_mode == FormTemplate.Travel.OFF:
+        if self.has_mileage or self.travel_mode == FormTemplate.Travel.OFF:
             return False
-        return (
-            self.travel_mode == FormTemplate.Travel.REQUIRED
-            or self.has_mileage
-            or self.cleaned_data.get("is_trip", False)
+        return self.travel_mode == FormTemplate.Travel.REQUIRED or self.cleaned_data.get(
+            "is_trip", False
         )
 
     def clean_full_name(self):

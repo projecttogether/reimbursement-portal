@@ -14,7 +14,7 @@
   const signatureStatus = document.getElementById("signature-status");
   const rows = [];
   const tripFields = document.getElementById("trip-fields");
-  const isTrip = form.elements.namedItem("is_trip");
+  const receiptTravel = document.getElementById("receipt-travel");
   let signature = null,
     signatureBusy = false,
     hasInk = false,
@@ -127,6 +127,20 @@
       ]),
     );
   }
+  function updateMileage(row) {
+    if (row.kind !== "mileage") return;
+    const data = rowData(row);
+    const returnDate = row.element.querySelector('[data-field="return_date"]');
+    row.element.querySelector(".return-date").hidden = !data.round_trip;
+    returnDate.disabled = !data.round_trip;
+    returnDate.required = data.round_trip;
+    returnDate.min = data.travel_date;
+    returnDate.setCustomValidity(
+      data.round_trip && data.return_date && data.return_date < data.travel_date
+        ? "Das Rückfahrtdatum darf nicht vor der Hinfahrt liegen."
+        : "",
+    );
+  }
   // The row's amount in cents; mileage is distance × rate, as on the server.
   function rowAmount(row) {
     const data = rowData(row);
@@ -177,16 +191,17 @@
   function updateTravel() {
     if (!tripFields) return;
     const hasMileage = rows.some((row) => row.kind === "mileage");
-    if (isTrip) {
-      if (hasMileage) isTrip.checked = true;
-      isTrip.disabled = hasMileage;
+    receiptTravel.hidden = !rows.length || hasMileage;
+    const needed =
+      !receiptTravel.hidden &&
+      (config.travel === "required" || receiptTravel.open);
+    for (const name of ["trip_destination", "trip_start", "trip_end"]) {
+      const field = form.elements.namedItem(name);
+      field.required = needed;
+      field.disabled = !needed;
     }
-    const needed = config.travel === "required" || hasMileage || isTrip?.checked;
-    tripFields.hidden = !needed;
-    for (const name of ["trip_destination", "trip_start", "trip_end"])
-      form.elements.namedItem(name).required = needed;
   }
-  isTrip?.addEventListener("change", updateTravel);
+  receiptTravel?.addEventListener("toggle", updateTravel);
   const fullName = form.elements.namedItem("full_name");
   const accountHolder = form.elements.namedItem("account_holder");
   let accountHolderEdited = false;
@@ -203,13 +218,16 @@
       row.element.querySelector('[data-action="up"]').disabled = index === 0;
       row.element.querySelector('[data-action="down"]').disabled =
         index === rows.length - 1;
-      row.element.querySelector('[data-action="remove"]').disabled =
-        rows.length === 1;
     });
     for (const id of ["add-expense", "add-mileage"]) {
       const button = document.getElementById(id);
       if (button) button.disabled = rows.length >= config.limits.expenses;
     }
+    const empty = document.getElementById("expenses-empty");
+    empty.hidden = rows.length > 0;
+    empty.textContent = config.mileage_rate
+      ? "Lege eine Auslage mit Beleg oder eine Kilometererstattung an."
+      : "Lege eine Auslage mit Beleg an.";
     updateTotals();
     updateTravel();
   }
@@ -373,16 +391,24 @@
   }
   function addRow(kind = "receipt") {
     if (rows.length >= config.limits.expenses) return;
+    clearErrors();
     const element = document
       .getElementById(kind === "mileage" ? "mileage-template" : "expense-template")
       .content.firstElementChild.cloneNode(true);
     const row = { id: crypto.randomUUID(), kind, files: [], element };
-    element.addEventListener("input", updateTotals);
+    if (kind === "mileage") {
+      element.querySelector('[data-field="travel_date"]').value = config.trip_start;
+      element.querySelector('[data-field="return_date"]').value = config.trip_end;
+      updateMileage(row);
+    }
+    element.addEventListener("input", () => {
+      updateMileage(row);
+      updateTotals();
+    });
     element.querySelectorAll("[data-action]").forEach((button) =>
       button.addEventListener("click", () => {
         const index = rows.indexOf(row);
         if (button.dataset.action === "remove") {
-          if (rows.length === 1) return;
           rows.splice(index, 1);
           element.remove();
           for (const file of row.files)
@@ -459,7 +485,7 @@
   document
     .getElementById("add-mileage")
     ?.addEventListener("click", () => addRow("mileage"));
-  addRow();
+  arrangeRows();
 
   async function discardSignature() {
     if (signature?.delete_url) {
@@ -608,6 +634,11 @@
     });
   document.getElementById("review-button").addEventListener("click", () => {
     clearErrors();
+    if (!rows.length) {
+      showError(config.messages.expense_count);
+      document.getElementById("add-expense").focus();
+      return;
+    }
     for (const element of details.querySelectorAll("input,textarea,select"))
       if (!element.checkValidity()) {
         element.reportValidity();
@@ -664,7 +695,7 @@
     const content = document.getElementById("review-content");
     content.replaceChildren();
     const descriptions = node("dl");
-    const travel = tripFields && !tripFields.hidden;
+    const travel = tripFields && !form.elements.trip_destination.disabled;
     for (const [name, label] of [
       ["full_name", "Name"],
       ["email", "E-Mail"],
@@ -675,7 +706,7 @@
       ["account_holder", "Kontoinhaber:in"],
       ["iban", "IBAN"],
       ["bic", "BIC"],
-      ["purpose", "Erläuterung"],
+      ["purpose", "Anlass/Projektbezug"],
       ["purpose_details", "Ergänzung"],
       ["trip_destination", "Zielort"],
       ["trip_start", "Reisebeginn"],
@@ -705,7 +736,7 @@
           ),
           node(
             "p",
-            `${data.travel_date.split("-").reverse().join(".")} · ${data.purpose}`,
+            `Hinfahrt: ${data.travel_date.split("-").reverse().join(".")}${data.round_trip ? ` · Rückfahrt: ${data.return_date.split("-").reverse().join(".")}` : ""} · Kennzeichen: ${data.vehicle_registration}`,
           ),
         );
       else
@@ -713,9 +744,7 @@
           node("p", `${index + 1}. ${data.merchant} · ${amount}`, "review-title"),
           node(
             "p",
-            data.receipt_reference.trim()
-              ? `${data.purpose} · Referenz ${data.receipt_reference}`
-              : data.purpose,
+            data.receipt_reference.trim() ? `Referenz ${data.receipt_reference}` : "",
           ),
         );
       if (row.files.length)
@@ -793,7 +822,7 @@
         signature: signature.id,
         declaration: true,
         privacy_acknowledged: true,
-        is_trip: Boolean(tripFields && !tripFields.hidden),
+        is_trip: Boolean(tripFields && !form.elements.trip_destination.disabled),
         website: form.elements.website.value,
       };
       for (const name of [

@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const base = process.env.BASE_URL || "http://127.0.0.1:8000";
+const formSlug = process.env.FORM_SLUG || "demo";
 const fixtures = process.env.FIXTURES_DIR;
 const output = process.env.OUTPUT_DIR || "/tmp/reimbursement-browser";
 if (!fixtures)
@@ -28,8 +29,8 @@ fs.mkdirSync(output, { recursive: true });
   page.on("pageerror", (error) => errors.push(error.message));
   const references = [];
   try {
-    for (const signatureMode of ["draw", "upload"]) {
-      await page.goto(`${base}/f/demo/`);
+    for (const signatureMode of ["draw", "upload", "mileage"]) {
+      await page.goto(`${base}/f/${formSlug}/`);
       await page.locator("#id_full_name").fill("Alex Beispiel");
       assert.equal(
         await page.locator("#id_account_holder").inputValue(),
@@ -40,55 +41,87 @@ fs.mkdirSync(output, { recursive: true });
       await page.locator("#id_city").fill("Berlin");
       await page.locator("#id_email").fill("participant@example.invalid");
       await page.locator("#id_iban").fill("DE89370400440532013000");
-      await page.locator("#id_purpose_0").check();
-      await page.locator("#id_is_trip").check();
-      await page.locator("#id_trip_destination").fill("Berlin");
-      await page.locator("#id_trip_start").fill("2026-10-20");
-      await page.locator("#id_trip_end").fill("2026-10-21");
-      for (const [index, merchant, amount, file] of [
-        [0, "Test Rail", "10,10", "train.png"],
-        [1, "Test Hotel", "20,20", "hotel.pdf"],
-      ]) {
-        if (index) await page.locator("#add-expense").click();
-        const row = page.locator(".expense-card").nth(index);
-        await row.locator('[data-field="merchant"]').fill(merchant);
-        await row
-          .locator('[data-field="purpose"]')
-          .fill("Workshop-Reisekosten");
-        await row
-          .locator('[data-field="receipt_reference"]')
-          .fill(`TEST-${index + 1}`);
-        await row.locator('[data-field="amount"]').fill(amount);
-        await row
-          .locator("input[type=file]")
-          .setInputFiles(path.join(fixtures, file));
-        await row
-          .locator(".file-status")
-          .filter({ hasText: /^Geprüft$/ })
-          .waitFor({ timeout: 60000 });
+      if (await page.locator("#id_purpose_0").count())
+        await page.locator("#id_purpose_0").check();
+      else
+        assert.equal(
+          await page.locator('#id_purpose[type="hidden"]').count(),
+          1,
+        );
+      assert.equal(await page.locator(".expense-card").count(), 0);
+      await page.locator("#review-button").click();
+      assert.equal(await page.locator("#review-panel").isVisible(), false);
+      assert.match(await page.locator("#form-error").innerText(), /position/i);
+      if (signatureMode === "mileage") {
+        await page.locator("#add-expense").click();
+        await page.locator('[data-action="remove"]').click();
+        assert.equal(await page.locator(".expense-card").count(), 0);
+        await page.locator("#add-mileage").click();
+        assert.equal(await page.locator("#receipt-travel").isVisible(), false);
+        assert.equal(await page.locator('[data-field="purpose"]').count(), 0);
+        for (const [field, value] of Object.entries({
+          travel_date: "2026-10-20",
+          vehicle_registration: "B-PT 123",
+          route_from: "Hamburg",
+          route_to: "Berlin",
+          distance_km: "100",
+        }))
+          await page.locator(`[data-field="${field}"]`).fill(value);
+        assert.match(await page.locator("#totals").innerText(), /30,00/);
+        await page.locator('[data-field="round_trip"]').check();
+        await page.locator('[data-field="return_date"]').fill("2026-10-19");
+        await page.locator("#review-button").click();
+        assert.equal(await page.locator("#review-panel").isVisible(), false);
+        await page.locator('[data-field="return_date"]').fill("2026-10-21");
+        assert.match(await page.locator("#totals").innerText(), /60,00/);
+      } else {
+        await page.locator("#add-expense").click();
+        await page.locator("#receipt-travel summary").click();
+        await page.locator("#id_trip_destination").fill("Berlin");
+        await page.locator("#id_trip_start").fill("2026-10-20");
+        await page.locator("#id_trip_end").fill("2026-10-21");
+        for (const [index, merchant, amount, file] of [
+          [0, "Test Rail", "10,10", "train.png"],
+          [1, "Test Hotel", "20,20", "hotel.pdf"],
+        ]) {
+          if (index) await page.locator("#add-expense").click();
+          const row = page.locator(".expense-card").nth(index);
+          await row.locator('[data-field="merchant"]').fill(merchant);
+          await row
+            .locator('[data-field="receipt_reference"]')
+            .fill(`TEST-${index + 1}`);
+          await row.locator('[data-field="amount"]').fill(amount);
+          await row
+            .locator("input[type=file]")
+            .setInputFiles(path.join(fixtures, file));
+          await row
+            .locator(".file-status")
+            .filter({ hasText: /^Geprüft$/ })
+            .waitFor({ timeout: 60000 });
+        }
+        assert.match(await page.locator("#totals").innerText(), /30,30/);
+        await page
+          .locator(".expense-card")
+          .nth(1)
+          .getByRole("button", { name: "Position nach oben verschieben" })
+          .click();
+        assert.equal(
+          await page
+            .locator(".expense-card")
+            .first()
+            .locator('[data-field="merchant"]')
+            .inputValue(),
+          "Test Hotel",
+        );
+        assert.match(
+          await page
+            .locator(".expense-card")
+            .first()
+            .locator(".file-list")
+            .innerText(),
+          /hotel.pdf/,
+        );
       }
-      assert.match(await page.locator("#totals").innerText(), /30,30/);
-      await page
-        .locator(".expense-card")
-        .nth(1)
-        .getByRole("button", { name: "Position nach oben verschieben" })
-        .click();
-      assert.equal(
-        await page
-          .locator(".expense-card")
-          .first()
-          .locator('[data-field="merchant"]')
-          .inputValue(),
-        "Test Hotel",
-      );
-      assert.match(
-        await page
-          .locator(".expense-card")
-          .first()
-          .locator(".file-list")
-          .innerText(),
-        /hotel.pdf/,
-      );
       if (signatureMode === "draw") {
         await page.screenshot({
           path: path.join(output, "desktop-form.png"),
@@ -108,7 +141,15 @@ fs.mkdirSync(output, { recursive: true });
       }
       await page.locator("#review-button").click();
       await page.locator("#review-panel").waitFor({ state: "visible" });
-      assert.match(await page.locator("#review-content").innerText(), /30,30/);
+      assert.match(
+        await page.locator("#review-content").innerText(),
+        signatureMode === "mileage" ? /60,00/ : /30,30/,
+      );
+      if (signatureMode === "mileage") {
+        const text = await page.locator("#review-content").innerText();
+        assert.match(text, /B-PT 123/);
+        assert.match(text, /21.10.2026/);
+      }
       assert.match(
         await page.locator("#review-content").innerText(),
         /Alex Beispiel/,
@@ -165,6 +206,12 @@ fs.mkdirSync(output, { recursive: true });
       await page.waitForURL(/\/received\/[0-9a-f-]+\//, { timeout: 60000 });
       const reference = await page.locator("#claim-reference").innerText();
       references.push(reference);
+      assert.match(
+        reference,
+        /^Erst\/\d{4}-\d{2}-\d{2}\/[^/]+\/beispiel\/\d{6}$/,
+      );
+      assert.equal(reference.split("/")[2], formSlug);
+      assert.match(await page.locator("body").innerText(), /binnen einer Woche/);
       await page.waitForFunction(
         () =>
           document
@@ -194,12 +241,12 @@ fs.mkdirSync(output, { recursive: true });
         fullPage: true,
       });
     }
-    assert.equal(new Set(references).size, 2);
+    assert.equal(new Set(references).size, 3);
     assert.deepEqual(errors, []);
     console.log(
       JSON.stringify({
         result: "passed",
-        flows: ["drawn signature", "uploaded signature"],
+        flows: ["drawn signature", "uploaded signature", "mileage only"],
         references,
         desktopAndMobile: true,
         pageErrors: errors,

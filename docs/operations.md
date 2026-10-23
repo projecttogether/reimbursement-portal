@@ -152,6 +152,10 @@ python manage.py purge_expired
 python manage.py purge_expired --execute
 ```
 
+`claim_status` and `retry_claim` also accept the full readable bookkeeping reference.
+It includes the participant's surname; the internal UUID remains available for
+operational correlation and survives content purge.
+
 `retry_claim` records the host actor and reason. It retries failed renders only
 before a PDF has become ready, and cannot resend once the PDF has been deleted. Delivery retries reuse the existing immutable PDF
 and destination. An ambiguous send, paused/accepted send, or intentional resend

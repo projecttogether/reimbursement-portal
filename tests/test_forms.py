@@ -190,6 +190,8 @@ def mileage_row(**changes):
         "id": str(uuid.uuid4()),
         "kind": "mileage",
         "travel_date": "2026-10-20",
+        "return_date": "2026-10-21",
+        "vehicle_registration": "B-PT 123",
         "route_from": "Hamburg",
         "route_to": "Berlin",
         "distance_km": "289",
@@ -214,15 +216,29 @@ def test_mileage_is_calculated_on_the_server_without_receipts(prepared):
     assert claim.snapshot["mileage_rate"] == "0.30"
 
 
-def test_mileage_requires_travel_details(prepared):
+def test_mileage_uses_its_own_travel_details_without_duplicate_claim_fields(prepared):
     prepared["data"]["expenses"].append(mileage_row())
-    prepared["data"].update(is_trip=False, trip_destination="")
-    rejected(prepared, "trip_destination")
+    prepared["data"].update(is_trip=False, trip_destination="", trip_start="", trip_end="")
+    assert post(prepared).status_code == 202
+    claim = Claim.objects.get()
+    assert claim.trip_destination == "" and claim.trip_start is None
+    assert claim.expenses.get(kind="mileage").return_date.isoformat() == "2026-10-21"
 
 
 @pytest.mark.parametrize(
     "changes",
-    [{"distance_km": "0"}, {"distance_km": "12.5"}, {"travel_date": ""}, {"route_to": ""}],
+    [
+        {"distance_km": "0"},
+        {"distance_km": "12.5"},
+        {"travel_date": ""},
+        {"route_to": ""},
+        {"return_date": ""},
+        {"return_date": "2026-10-19"},
+        {"return_date": "2026-99-99"},
+        {"vehicle_registration": ""},
+        {"vehicle_registration": "X" * 21},
+        {"vehicle_registration": "ß" * 20},
+    ],
 )
 def test_invalid_mileage_rows_are_rejected(prepared, changes):
     prepared["data"]["expenses"].append(mileage_row(**changes))
