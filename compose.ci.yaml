@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: reimbursement
       POSTGRES_USER: reimbursement
-      POSTGRES_PASSWORD: local-ci-only
+      POSTGRES_PASSWORD: ci-only
     tmpfs:
       - /var/lib/postgresql/data
     healthcheck:
@@ -19,7 +19,7 @@ services:
       target: test
     environment:
       DJANGO_DEBUG: "1"
-      DATABASE_URL: postgresql://reimbursement:local-ci-only@database:5432/reimbursement
+      DATABASE_URL: postgresql://reimbursement:ci-only@database:5432/reimbursement
       MAIL_DELIVERY_MODE: local
       UPLOAD_SCANNER: disabled
     tmpfs:

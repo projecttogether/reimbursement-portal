@@ -1,5 +1,9 @@
 version: 2
 updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
   # Images are pinned by digest; these updates keep the digests current and reviewed.
   - package-ecosystem: docker
     directory: /

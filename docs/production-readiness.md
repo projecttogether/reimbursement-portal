@@ -1,7 +1,9 @@
 # Release checks
 
-Run `./scripts/ci.sh` before each release. It checks lint/formatting, schema drift,
-all PostgreSQL regressions, production configuration and the runtime image.
+Before each release, require a passing GitHub Actions
+[`CI` workflow](../.github/workflows/ci.yaml) for the commit being deployed. Its
+`Checks and production image` job checks lint/formatting, schema drift, all
+PostgreSQL regressions, production configuration and the runtime image.
 Production startup refuses development mode, missing or weak secrets, SQLite,
 disabled scanning/mail/sandbox controls, untrusted forwarded-header configuration,
 or missing filesystem confinement. Deploy with the supplied Compose file and
