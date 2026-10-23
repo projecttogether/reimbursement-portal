@@ -55,14 +55,19 @@ served from one domain. Follow the [Coolify deployment steps](docs/coolify.md),
 including the PT Login client. For upgrades, keep every persistent volume. The
 `exclude_from_hc` field is a Coolify extension; use `compose.yaml` locally.
 
-## Local CI
+## CI
 
-```bash
-./scripts/ci.sh
-```
+[GitHub Actions CI](.github/workflows/ci.yaml) runs on pull requests, pushes to
+`main`, and manual runs from the repository's Actions tab. The
+`Checks and production image` job runs lint, formatting, Django and migration
+checks, the full test suite against PostgreSQL, and production deployment checks.
+It also builds the production image, including the Tailwind stylesheet.
 
-Runs lint, formatting, Django and migration checks, PostgreSQL tests, and a
-production deployment check and image build. CI runs locally only, using a temporary database.
+The workflow uses `compose.ci.yaml` with a disposable database and inert test
+configuration. It needs no application secrets and removes its containers and
+volumes after each run. Require a passing run for the commit being released.
+
+## Capacity checks
 
 ```bash
 ./scripts/capacity.sh 250
