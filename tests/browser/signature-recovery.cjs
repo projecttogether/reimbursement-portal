@@ -23,6 +23,7 @@ if (!fixtures)
       original(fn, delay >= 2000 && delay < 15000 ? 0 : delay, ...args);
   });
   const page = await context.newPage();
+  await require("./offline.cjs")(page, base);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   const uploads = new Map();

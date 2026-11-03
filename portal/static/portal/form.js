@@ -15,8 +15,7 @@
   const rows = [];
   const tripFields = document.getElementById("trip-fields");
   const receiptTravel = document.getElementById("receipt-travel");
-  let signature = null,
-    signatureBusy = false,
+  let signatureViewBusy = false,
     hasInk = false,
     drawing = false,
     submitting = false,
@@ -31,7 +30,7 @@
   // The named input, or the first radio button of a group.
   function fieldElement(name) {
     const element = form.elements.namedItem(name);
-    return element instanceof RadioNodeList ? element[0] : element;
+    return (element instanceof RadioNodeList ? element[0] : element) || document.getElementById(name);
   }
   function showError(message, fields = {}) {
     const messages = Object.values(fields)
@@ -136,9 +135,15 @@
     return {
       ...data,
       draft_id: config.draft_id,
-      has_mileage: rows.some((row) => row.kind === "mileage"),
+      expenses: expenseData(),
       is_trip: Boolean(tripFields && !form.elements.trip_destination.disabled),
     };
+  }
+  function expenseData() {
+    return rows.map((row) => ({
+      id: row.id, kind: row.kind, ...rowData(row),
+      uploads: row.files.filter((file) => file.id).map((file) => file.id),
+    }));
   }
   async function validateDetails(all = false) {
     const version = validationVersion, request = ++validationRequest;
@@ -164,10 +169,21 @@
       if (["file", "hidden"].includes(element.type)) continue;
       if (!all && !touched.has(element.name || element.id)) continue;
       const message = element.disabled ? "" :
-        fields[element.name]?.map((error) => error.message).join(" ") ||
+        fields[element.name || element.id]?.map((error) => error.message).join(" ") ||
         localFeedback(element);
       fieldFeedback(element, message);
       if (message) valid = false;
+    }
+    for (const row of rows) {
+      const target = document.getElementById(`error-expense-${row.id}-__all__`);
+      if (all || target.textContent)
+        target.textContent = fields[`expense-${row.id}-__all__`]?.map((error) => error.message).join(" ") || "";
+    }
+    document.getElementById("error-__all__").textContent = rows.length
+      ? fields.__all__?.map((error) => error.message).join(" ") || "" : "";
+    if (all && Object.keys(fields).length) {
+      showError("Bitte prüfe die markierten Angaben.", fields);
+      valid = false;
     }
     return valid;
   }
@@ -184,9 +200,8 @@
       if (name === "bic" || form.elements.namedItem(name)?.value) touched.add(name);
     }
     const row = element.closest(".expense-card");
-    if (row) {
-      for (const field of row.querySelectorAll("[data-field]"))
-        if (field.value && field.type !== "checkbox") touched.add(field.id);
+    if (row && ["travel_date", "round_trip"].includes(element.dataset.field)) {
+      touched.add(row.querySelector('[data-field="return_date"]').id);
     }
     validationVersion++;
     clearTimeout(validationTimer);
@@ -503,6 +518,10 @@
       field.setAttribute("aria-describedby", error.id);
       field.closest(".field").append(error);
     });
+    const rowError = node("p", "", "field-error");
+    rowError.id = `error-expense-${row.id}-__all__`;
+    rowError.setAttribute("aria-live", "polite");
+    element.append(rowError);
     if (kind === "mileage") {
       element.querySelector('[data-field="travel_date"]').value = config.trip_start;
       element.querySelector('[data-field="return_date"]').value = config.trip_end;
@@ -594,63 +613,52 @@
     ?.addEventListener("click", () => addRow("mileage"));
   arrangeRows();
 
-  async function discardSignature() {
-    if (signature?.delete_url) {
-      try {
-        await api(signature.delete_url, { method: "DELETE" });
-      } catch (error) {
-        // A previous successful deletion may have lost its response.
-        if (error.status !== 404) throw error;
-      }
-    }
-    signature = null;
-  }
-  async function clearSignature() {
-    await discardSignature();
+  const signatureControls = [
+    "signature-file", "clear-signature", "edit-button", "submit-button", "retry-signature",
+  ];
+  const signature = PortalSignature.createSignature({
+    upload: (blob, update) => uploadFile(blob, "signature", null, update),
+    poll: pollUpload,
+    remove: (url) => api(url, { method: "DELETE" }),
+    onChange(status) {
+      document.getElementById("retry-signature").hidden = !status.canRetry;
+      signatureControls.forEach((id) => {
+        document.getElementById(id).disabled = status.busy || signatureViewBusy || submitting;
+      });
+      if (status.state === "replacing") {
+        resetSignatureView();
+        signatureStatus.textContent = "Unterschrift wird hochgeladen und geprüft …";
+      } else if (status.state === "ready") signatureStatus.textContent = "Unterschrift geprüft.";
+      else if (status.message) signatureStatus.textContent = status.message;
+    },
+  });
+  function resetSignatureView() {
     context.clearRect(0, 0, canvas.width, canvas.height);
     hasInk = false;
-    document.getElementById("retry-signature").hidden = true;
     document.getElementById("signature-file").value = "";
     signatureStatus.textContent = config.messages.signature_hint;
   }
-  async function uploadSignature(blob) {
-    try {
-      signature = await uploadFile(blob, "signature", null, (update) => {
-        if (update.id) signature = { ...signature, ...update };
-      });
-      document.getElementById("retry-signature").hidden =
-        signature.state !== "pending";
-    } catch (error) {
-      // Retain the deletion handle even if validation or polling fails.
-      if (signature) signature.state = "failed";
-      throw error;
-    }
+  async function clearSignature() {
+    await signature.clear();
+    resetSignatureView();
   }
   async function signatureAction(action) {
-    if (signatureBusy || submitting) return false;
+    if (signature.status().busy || signatureViewBusy || submitting) return false;
     clearErrors();
-    signatureBusy = true;
-    const controls = [
-      "signature-file",
-      "clear-signature",
-      "edit-button",
-      "submit-button",
-      "retry-signature",
-    ];
-    controls.forEach((id) => (document.getElementById(id).disabled = true));
+    signatureViewBusy = true;
+    signatureControls.forEach((id) => (document.getElementById(id).disabled = true));
     try {
       await action();
       return true;
     } catch (error) {
       showError(error.message);
-      signatureStatus.textContent =
-        "Bitte lösche die Unterschrift oder versuche es erneut.";
+      signatureStatus.textContent = "Bitte lösche die Unterschrift oder versuche es erneut.";
       return false;
     } finally {
-      signatureBusy = false;
-      document.getElementById("retry-signature").hidden =
-        signature?.state !== "pending";
-      controls.forEach((id) => (document.getElementById(id).disabled = false));
+      signatureViewBusy = false;
+      signatureControls.forEach((id) => {
+        document.getElementById(id).disabled = signature.status().busy || submitting;
+      });
     }
   }
   function position(event) {
@@ -661,13 +669,10 @@
     ];
   }
   canvas.addEventListener("pointerdown", (event) => {
-    if (submitting || signatureBusy) return;
-    if (signature) {
-      if (!hasInk) context.clearRect(0, 0, canvas.width, canvas.height);
-      // Delete the previous server record before uploading the new drawing.
-      signature.state = "obsolete";
-      document.getElementById("retry-signature").hidden = true;
-    }
+    if (submitting || signatureViewBusy || signature.status().busy) return;
+    if (signature.status().state !== "empty" && !hasInk)
+      context.clearRect(0, 0, canvas.width, canvas.height);
+    signature.invalidate();
     canvas.setPointerCapture(event.pointerId);
     const [x, y] = position(event);
     context.beginPath();
@@ -688,20 +693,7 @@
   canvas.addEventListener("pointerup", () => (drawing = false));
   canvas.addEventListener("pointercancel", () => (drawing = false));
   document.getElementById("retry-signature").addEventListener("click", () =>
-    signatureAction(async () => {
-      if (signature?.state !== "pending" || !signature.status_url) return;
-      signature = await pollUpload(signature, (update) => {
-        signature = { ...signature, ...update };
-        signatureStatus.textContent =
-          update.message || "Unterschrift wird geprüft …";
-      });
-      document.getElementById("retry-signature").hidden =
-        signature.state !== "pending";
-      signatureStatus.textContent =
-        signature.state === "ready"
-          ? "Unterschrift geprüft."
-          : signature.message;
-    }),
+    signatureAction(() => signature.retry()),
   );
   document
     .getElementById("clear-signature")
@@ -716,14 +708,11 @@
         return;
       }
       await signatureAction(async () => {
-        await clearSignature();
-        signatureStatus.textContent =
-          "Unterschrift wird hochgeladen und geprüft …";
-        await uploadSignature(file);
-        signatureStatus.textContent =
-          signature.state === "ready"
-            ? `Unterschrift geprüft: ${file.name}`
-            : signature.message;
+        signatureStatus.textContent = "Unterschrift wird hochgeladen und geprüft …";
+        await signature.replace(file);
+        resetSignatureView();
+        signatureStatus.textContent = signature.status().state === "ready"
+          ? `Unterschrift geprüft: ${file.name}` : signature.status().message;
         const image = await createImageBitmap(file);
         const scale = Math.min(
           canvas.width / image.width,
@@ -782,22 +771,6 @@
       showError(
         "Bitte gib für jede Position einen positiven Betrag in Euro bzw. eine Entfernung in ganzen Kilometern ein.",
       );
-      return;
-    }
-    const iban = form.elements.namedItem("iban").value.replace(/\s/g, "");
-    if (
-      iban.length > 2 &&
-      !config.sepa_countries.includes(iban.slice(0, 2).toUpperCase()) &&
-      !form.elements.namedItem("bic").value.trim()
-    ) {
-      showError("Bitte prüfe die markierten Angaben.", {
-        bic: [
-          {
-            message:
-              "Für Konten außerhalb des SEPA-Raums ist die BIC erforderlich.",
-          },
-        ],
-      });
       return;
     }
     if (
@@ -895,7 +868,7 @@
   });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (submitting || signatureBusy || review.hidden) return;
+    if (submitting || signatureViewBusy || signature.status().busy || review.hidden) return;
     clearErrors();
     if (
       !form.elements.declaration.checked ||
@@ -904,7 +877,7 @@
       showError("Bitte bestätige die Erklärung und den Datenschutzhinweis.");
       return;
     }
-    if (!hasInk && !["ready", "pending"].includes(signature?.state)) {
+    if (!hasInk && !["ready", "pending"].includes(signature.status().state)) {
       showError("Bitte unterschreibe oder lade eine Unterschrift hoch.");
       return;
     }
@@ -915,56 +888,17 @@
       .querySelectorAll("button,input")
       .forEach((element) => (element.disabled = true));
     try {
-      if (signature?.state === "pending") {
-        signature = await pollUpload(signature, (update) => {
-          signature = { ...signature, ...update };
-          signatureStatus.textContent =
-            update.message || "Unterschrift wird geprüft …";
-        });
-        document.getElementById("retry-signature").hidden =
-          signature.state !== "pending";
-        if (signature.state !== "ready") throw new Error(signature.message);
-      }
-      if (!signature || signature.state !== "ready") {
-        await discardSignature();
-        const blob = await new Promise((resolve) =>
-          canvas.toBlob(resolve, "image/png"),
-        );
-        await uploadSignature(blob);
-        if (signature.state !== "ready") throw new Error(signature.message);
-      }
+      const signatureId = await signature.ensureReady(() => new Promise((resolve) =>
+        canvas.toBlob(resolve, "image/png"),
+      ));
       const data = {
-        draft_id: config.draft_id,
+        ...detailData(),
         token: config.token,
-        signature: signature.id,
+        signature: signatureId,
         declaration: true,
         privacy_acknowledged: true,
-        is_trip: Boolean(tripFields && !form.elements.trip_destination.disabled),
         website: form.elements.website.value,
       };
-      for (const name of [
-        "full_name",
-        "email",
-        "street",
-        "postal_code",
-        "city",
-        "country",
-        "account_holder",
-        "iban",
-        "bic",
-        "purpose",
-        "purpose_details",
-        "trip_destination",
-        "trip_start",
-        "trip_end",
-      ])
-        data[name] = form.elements.namedItem(name)?.value || "";
-      data.expenses = rows.map((row) => ({
-        id: row.id,
-        kind: row.kind,
-        ...rowData(row),
-        uploads: row.files.map((file) => file.id),
-      }));
       const result = await api(config.submit_url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -977,9 +911,8 @@
         try {
           await clearSignature();
         } catch {
-          if (signature) signature.state = "obsolete";
-          context.clearRect(0, 0, canvas.width, canvas.height);
-          hasInk = false;
+          signature.invalidate();
+          resetSignatureView();
         }
         form.elements.declaration.checked = false;
         form.elements.privacy_acknowledged.checked = false;

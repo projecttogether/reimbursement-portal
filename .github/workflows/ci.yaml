@@ -31,6 +31,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check Signature lifecycle
+        run: node --test tests/js/*.test.cjs
+
       - name: Build test image
         run: docker compose --env-file /dev/null build checks
 

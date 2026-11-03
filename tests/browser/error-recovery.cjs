@@ -69,13 +69,10 @@ if (!fixtures)
       postal_code: "12345",
       city: "Berlin",
       email: "review@example.invalid",
-      iban:
-        invalidField === "iban"
-          ? "DE89370400440532013001"
-          : "DE89370400440532013000",
+      iban: "DE89370400440532013000",
       trip_destination: "Berlin",
       trip_start: "2026-10-20",
-      trip_end: invalidField === "trip_end" ? "2026-10-19" : "2026-10-21",
+      trip_end: "2026-10-21",
     };
     for (const [field, value] of Object.entries(values))
       await page.locator(`#id_${field}`).fill(value);
@@ -89,6 +86,7 @@ if (!fixtures)
       .setInputFiles(path.join(fixtures, "train.png"));
     await page.locator(".file-status.ready").waitFor();
     await page.locator("#review-button").click();
+    await page.locator("#review-panel").waitFor({ state: "visible" });
     assert.equal(
       await page.evaluate(() => document.activeElement.tagName),
       "H2",
@@ -103,6 +101,12 @@ if (!fixtures)
     );
     await page.locator("#declaration").check();
     await page.locator("#privacy_acknowledged").check();
+    // Simulate data changing after review, so submission must still reject it.
+    // Invalid entries before review are now caught by the shared live rules.
+    await page.evaluate((field) => {
+      document.getElementById(`id_${field}`).value = field === "iban"
+        ? "DE89370400440532013001" : "2026-10-19";
+    }, invalidField);
   }
   try {
     for (const field of ["iban", "trip_end"]) {

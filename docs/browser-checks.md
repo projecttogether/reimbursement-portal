@@ -48,7 +48,8 @@ compression, webhook signatures, delivery failures, cleanup, and PostgreSQL race
 This checklist records the additional visual and browser interaction checks.
 
 `tests/browser/live-validation.cjs` checks the debounce delay, focus, error clearing,
-dependent fields, stale responses, expense amounts, and validation before review.
+dependent fields, stale responses, expense amounts, server Expense errors after row
+reordering, return-date dependencies, and validation before review.
 It intercepts validation responses and sends no uploads or emails.
 
 The repeatable interaction smoke test is `tests/browser/smoke.cjs`. With Playwright
@@ -87,3 +88,15 @@ test covers failed publish/unpublish requests, lost responses, edits after a
 failure, Enter in text fields, and keyboard activation of the publication button.
 It also verifies the save spinner/checkmark, toolbar alignment, deletion visibility,
 and cancellation from the deletion confirmation page.
+
+`node --test tests/js/*.test.cjs` checks the Signature lifecycle without a browser or
+server. It covers failed-upload cleanup, deletion failure, pending Upload reuse,
+obsolete polling results and drawings changed during capture. CI runs these checks
+alongside the server suite. Canvas rendering, busy controls and consent reset remain
+covered by the browser recovery scripts.
+
+`FORM_HTML=/absolute/path/to/rendered-demo.html` runs live-validation and
+signature-recovery against an offline rendered page. The scripts intercept the
+page and local scripts; validation is simulated, so server rule agreement is tested
+separately in `tests/test_claim_validation.py`. Error-recovery uses a running local
+portal and changes entries after review to verify authoritative submission checks.

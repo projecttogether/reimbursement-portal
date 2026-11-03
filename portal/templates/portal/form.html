@@ -73,6 +73,7 @@
       {% if template.travel == 'optional' %}</details>{% else %}</div>{% endif %}
       {% endif %}
       <div class="totals border-t pt-4" id="totals" aria-live="polite"></div>
+      <p id="error-__all__" class="field-error" aria-live="polite"></p>
     </div>
   </section>
 
@@ -145,4 +146,4 @@
   </article>
 </template>
 {{ configuration|json_script:'portal-configuration' }}
-{% endblock %}{% block scripts %}<script src="{% static 'portal/form.js' %}" defer></script>{% endblock %}
+{% endblock %}{% block scripts %}<script src="{% static 'portal/signature.js' %}" defer></script><script src="{% static 'portal/form.js' %}" defer></script>{% endblock %}

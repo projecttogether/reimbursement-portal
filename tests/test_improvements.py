@@ -15,7 +15,7 @@ from portal.services import confirmations, publication
 from portal.services.retention import purge_claim
 from portal.services.storage import outbox_key, path_for
 from tests.test_delivery import mock_provider
-from tests.test_forms import post
+from tests.test_forms import mileage_row, post
 
 pytestmark = pytest.mark.django_db
 
@@ -103,7 +103,9 @@ def test_live_validation_checks_dependencies_and_omits_review_requirements(prepa
     assert set(response.json()["fields"]) == {"bic"}
     assert "SEPA" in response.json()["fields"]["bic"][0]["message"]
     assert "trip_end" in validate(prepared, trip_end="2026-01-01").json()["fields"]
-    assert validate(prepared, trip_end="", has_mileage=True).json() == {"fields": {}}
+    assert validate(prepared, trip_end="", expenses=[mileage_row()]).json() == {"fields": {}}
+    # A browser-supplied flag cannot disable travel rules for receipt-only claims.
+    assert "trip_end" in validate(prepared, trip_end="", has_mileage=True).json()["fields"]
 
 
 def test_live_validation_requires_the_owning_session_token_and_current_draft(prepared):
