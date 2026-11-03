@@ -20,7 +20,7 @@ from portal.intake import (
     parse_distance,
 )
 from portal.models import Claim, Expense
-from portal.services import drafts, queue, uploads
+from portal.services import confirmations, drafts, queue, uploads
 from portal.services.drafts import digest
 from portal.services.references import allocate_reference
 
@@ -203,4 +203,5 @@ def submit_claim(participant, form_slug, data):
     draft.expires_at = timezone.now() + timedelta(days=7)
     draft.save(update_fields=["claim", "payload_hash", "expires_at"])
     queue.enqueue("render", claim)
+    confirmations.schedule(claim)
     return claim

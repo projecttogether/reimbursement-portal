@@ -187,7 +187,7 @@ def test_filled_pdf_form_remains_visible_after_normalization(tmp_path):
         page.close()
 
 
-def test_pipeline_sends_one_complete_local_email(accepted, settings):
+def test_pipeline_sends_finance_pdf_and_participant_confirmation(accepted, settings):
     while run_one():
         pass
     accepted.refresh_from_db()
@@ -199,8 +199,11 @@ def test_pipeline_sends_one_complete_local_email(accepted, settings):
     from email.parser import BytesParser
 
     files = list((settings.PRIVATE_STORAGE_ROOT / "outbox").glob("*.eml"))
-    assert len(files) == 1
-    message = BytesParser(policy=policy.default).parsebytes(files[0].read_bytes())
+    assert len(files) == 2
+    messages = [BytesParser(policy=policy.default).parsebytes(file.read_bytes()) for file in files]
+    message = next(
+        message for message in messages if message["To"] == accepted.snapshot["recipient"]
+    )
     attachment = list(message.iter_attachments())[0]
     assert attachment.get_content_type() == "application/pdf"
     assert len(PdfReader(io.BytesIO(attachment.get_payload(decode=True))).pages) == 2

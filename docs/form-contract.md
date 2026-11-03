@@ -35,13 +35,19 @@ Google dependency and does not change or upload data to that workbook.
 - C41, Unterschrift → required private drawn/uploaded image, normalized and included
   in the PDF. E44, Datum → server-recorded submission date in Europe/Berlin.
 
-The portal adds email for Finance correspondence, one to three receipt files per
+The portal adds email for the participant's receipt and Finance correspondence, one to three receipt files per
 expense, mileage rows, a review step, and privacy notice acknowledgment. It does not
 require expense categories or per-expense dates absent from the reference form.
 The form starts with no positions. Participants choose "Auslage mit Beleg" or
 "Kilometererstattung" and can combine both or submit mileage alone. Receipt rows
 need at least one receipt; one file is sufficient and additional files are optional.
 Mileage rows need none.
+
+Form editors set each form's public title and description in the admin area under
+"Für Teilnehmende". Empty values use the standard heading and description. These
+wording changes do not invalidate open drafts. Entries are checked 650 ms after
+typing stops. Inline messages appear for edited fields and their dependencies;
+the review button validates every field using the same server rules as submission.
 
 The source's internal KST and KTR values, and any other internal value such as an
 ID, are template fields whose values each form sets (`Form.field_values`). They are
@@ -56,6 +62,17 @@ emails. Email filenames replace slashes with underscores. Existing claims keep
 their UUID reference. The readable reference contains a name and is cleared at
 content purge; the counter contains no participant data and is retained to prevent
 number reuse. Operator commands accept either reference or UUID.
+
+Acceptance also queues one participant confirmation email through MailerSend,
+independently of the Finance PDF job. The email includes the reference, form name,
+support contact, and payment timing of usually 14 days, rarely up to 30 days. It has
+no attachments or banking details. Replaying a submission queues no additional
+email. Local development captures it as a private `.eml` file. The existing test
+recipient allowlist applies to participant emails too; Finance inbox approval
+continues to apply only to Finance deliveries. Only known pre-acceptance failures
+retry automatically. Confirmation state and provider message ID are stored in
+`Confirmation`; an unknown outcome is not resent. Content purge removes that record
+and its local email copy.
 
 The authoritative PDF contains the form details and a signature followed by all
 receipt pages. Receipt PDF pages are flattened to preserve their visible content,

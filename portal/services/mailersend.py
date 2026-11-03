@@ -32,16 +32,17 @@ class MailerSendTransport:
             "reply_to": {"email": message.reply_to},
             "subject": message.subject,
             "text": message.text,
-            "attachments": [
+            "tags": ["pt-reimbursement", f"attempt-{message.attempt_id}"],
+            "settings": {"track_opens": False, "track_clicks": False, "track_content": False},
+        }
+        if message.attachment is not None:
+            payload["attachments"] = [
                 {
                     "content": base64.b64encode(message.attachment).decode("ascii"),
                     "filename": message.filename,
                     "disposition": "attachment",
                 }
-            ],
-            "tags": ["pt-reimbursement", f"attempt-{message.attempt_id}"],
-            "settings": {"track_opens": False, "track_clicks": False, "track_content": False},
-        }
+            ]
         try:
             with client() as provider:
                 response = provider.post("email", json=payload)

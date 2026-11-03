@@ -5,8 +5,8 @@
 
 <div class="flex flex-col items-start gap-3">
   {% component "badge" variant="outline" %}{{ form.name }}{% endcomponent %}
-  <h1 class="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">Deine Auslagen. Einfach eingereicht.</h1>
-  <p class="text-muted-foreground sm:text-lg">Beantrage hier die Erstattung von Kosten, die du für ProjectTogether privat ausgelegt hast – zum Beispiel Fahrt- und Übernachtungskosten oder andere Auslagen wie Druckkosten. Wir stellen deine Angaben und Belege in einer PDF für unser Finance-Team zusammen.</p>
+  <h1 class="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">{{ form.display_title }}</h1>
+  <p class="text-muted-foreground sm:text-lg">{{ form.display_description|linebreaksbr }}</p>
   {% if form.closes_at %}<p class="inline-flex items-center gap-2 text-sm font-medium">{% icon "calendar" class="size-4 text-muted-foreground" %}Einreichen bis {{ form.closes_at|date:"d.m.Y, H:i T" }}</p>{% endif %}
 </div>
 
@@ -30,7 +30,7 @@
     {% include "portal/section_heading.html" with number="01" id="section-details" title="Deine Angaben" text="Für die Zuordnung und Überweisung deiner Erstattung." %}
     <div class="grid gap-5 p-5 sm:grid-cols-2 sm:p-6">
       {% include 'portal/field.html' with field=claim_form.full_name %}
-      {% include 'portal/field.html' with field=claim_form.email hint='Für Rückfragen zu deinem Antrag.' %}
+      {% include 'portal/field.html' with field=claim_form.email hint='Für die Eingangsbestätigung und Rückfragen zu deinem Antrag.' %}
       {% include 'portal/field.html' with field=claim_form.street wide=True %}
       <div class="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-4">{% include 'portal/field.html' with field=claim_form.postal_code %}{% include 'portal/field.html' with field=claim_form.city %}</div>
       {% include 'portal/field.html' with field=claim_form.country %}

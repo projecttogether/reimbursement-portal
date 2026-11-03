@@ -60,6 +60,8 @@ class SettingsForm(forms.ModelForm):
         model = Form
         fields = [
             "name",
+            "title",
+            "description",
             "slug",
             "primary",
             "opens_at",
