@@ -18,6 +18,7 @@ urlpatterns = [
         name="upload_remove",
     ),
     path("f/<slug:form_slug>/submit/", views.submit, name="submit"),
+    path("f/<slug:form_slug>/validate/", views.validate_claim, name="validate_claim"),
     path("received/<uuid:claim_id>/", views.received, name="received"),
     path("webhooks/mailersend/", views.mailersend_webhook, name="mailersend_webhook"),
     path("-/healthz", views.healthz, name="healthz"),

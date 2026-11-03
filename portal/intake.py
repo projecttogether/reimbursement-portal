@@ -114,8 +114,8 @@ def messages():
             f"höchstens {current.claim_pages} Belegseiten"
         ),
         "receipt_hint": (
-            "Eine Rechnung, Quittung oder ein Ticket, aus dem der Betrag und die Angaben "
-            "hervorgehen, reicht aus. Weitere Dateien sind optional. "
+            "Eine Rechnung, Quittung oder ein Ticket, aus dem der Betrag, Zweck und "
+            "Geschäftspartner hervorgehen. Weitere Dateien sind optional. "
             f"Bis zu {current.files_per_expense} Dateien. "
             "Die Reihenfolge kannst du anschließend ändern."
         ),

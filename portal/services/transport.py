@@ -24,8 +24,8 @@ class Message:
     recipient: str
     subject: str
     text: str
-    attachment: bytes
-    filename: str
+    attachment: bytes | None = None
+    filename: str = ""
 
 
 @dataclass(frozen=True)
@@ -46,9 +46,11 @@ class LocalOutbox:
             message.recipient,
             message.subject,
         )
+        email["Reply-To"] = message.reply_to
         email.set_content(message.text)
-        email.add_attachment(
-            message.attachment, maintype="application", subtype="pdf", filename=message.filename
-        )
+        if message.attachment is not None:
+            email.add_attachment(
+                message.attachment, maintype="application", subtype="pdf", filename=message.filename
+            )
         write_bytes(outbox_key(message.attempt_id), email.as_bytes())
         return SendResult(DELIVERED, f"local-{message.attempt_id}")

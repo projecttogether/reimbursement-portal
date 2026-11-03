@@ -13,7 +13,7 @@ from django.conf import settings
 from django.db import transaction
 
 from portal.models import Claim, Upload
-from portal.services import delivery, queue, uploads
+from portal.services import confirmations, delivery, queue, uploads
 from portal.services.capacity import temporary_workspace
 from portal.services.documents import ProcessingError, build_claim_pdf, validate_upload
 from portal.services.scanner import ScanError, scan_file
@@ -173,4 +173,46 @@ class Send:
 
 
 VALIDATE, RENDER, SEND = Validate(), Render(), Send()
-KINDS = {"validate": VALIDATE, "render": RENDER, "send": SEND}
+
+
+class Confirm:
+    """Send a receipt independently. Retry only known failures before acceptance."""
+
+    resumable = False
+
+    def run(self, job, lease):
+        with transaction.atomic():
+            if not lease.live():
+                return
+            confirmation = confirmations.start(job.claim_id)
+            if not confirmation:
+                lease.cancel()
+                return
+        result = confirmations.send(confirmation)
+        with transaction.atomic():
+            confirmations.mark(job.claim_id, result.state, result.error_code, result.message_id)
+            if result.state == PENDING:
+                if not lease.retry(result.error_code, minimum_delay=result.retry_after):
+                    confirmations.mark(job.claim_id, FAILED, "retry_exhausted")
+                    lease.finish(queue.FAILED, "retry_exhausted")
+            else:
+                lease.finish(
+                    queue.FAILED if result.state in {FAILED, UNKNOWN} else queue.DONE,
+                    result.error_code,
+                )
+
+    def failure(self, exc):
+        return UNEXPECTED
+
+    def retrying(self, job, code):
+        raise AssertionError("Confirmation outcome is unknown after an unexpected failure")
+
+    def failed(self, job, code):
+        confirmations.mark(job.claim_id, UNKNOWN, code)
+
+    def interrupted(self, job):
+        self.failed(job, INTERRUPTED)
+        return UNKNOWN
+
+
+KINDS = {"validate": VALIDATE, "render": RENDER, "send": SEND, "confirm": Confirm()}

@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from portal.models import (
     Claim,
+    Confirmation,
     DeliveryEvent,
     Draft,
     DraftAdmission,
@@ -47,12 +48,16 @@ def purge_claim(claim_id):
     for upload in claim.uploads.all():
         uploads.remove_files(upload)
     remove_keys(claim.pdf_key)
+    confirmation = getattr(claim, "confirmation", None)
+    if confirmation:
+        remove_keys(outbox_key(confirmation.pk))
     delivery = getattr(claim, "delivery", None)
     if delivery:
         for attempt in delivery.attempts.all():
             remove_keys(outbox_key(attempt.id))
     with transaction.atomic():
         claim = Claim.objects.select_for_update().get(pk=claim_id)
+        Confirmation.objects.filter(claim=claim).delete()
         if delivery:
             DeliveryEvent.objects.filter(attempt__delivery=delivery).delete()
             delivery.attempts.all().delete()

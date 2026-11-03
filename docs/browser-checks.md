@@ -24,6 +24,10 @@ Run the worker alongside the web application. Never use production receipts.
 5. Try invalid amounts, missing fields, missing receipts, and an empty signature.
    Check readable errors and keyboard focus. Unsupported/oversized files must not
    become ready. A scanner outage must leave files pending.
+   Pause typing for 650 ms: edited fields must show inline validation errors without
+   moving focus. Correcting an IBAN, postcode, or amount must clear its error.
+   Changing the country must recheck the postcode; a non-SEPA IBAN must require BIC.
+   A delayed response for an earlier value must not overwrite the latest result.
 6. Review every value, acknowledge the declaration/privacy notice, and upload a
    synthetic signature. Also verify drawing with mouse or touch. Returning to edit
    must clear both signature and declaration before another review.
@@ -32,13 +36,20 @@ Run the worker alongside the web application. Never use production receipts.
    no banking details. Opening the form link again starts a new, empty claim. Reload it and confirm the reference
    remains the same. The readable reference follows
    `Erst/YYYY-MM-DD/demo/beispiel/000001` and differs for repeated claims. Another browser session must receive a 404 for that page.
+   Payment timing must say usually 14 days, rarely up to 30 days. No retention
+   duration appears on this page.
 8. Inspect the private local `.eml` attachment. Check summary fields, signature,
    exact totals, page completeness, row/file order, PDF bookmarks, and readability.
    Confirm the full serialized PDF is within the output limit.
+   A separate participant `.eml` must contain the same reference and no attachments.
 
 Tests in `tests/` independently verify the server contract, document pipeline,
 compression, webhook signatures, delivery failures, cleanup, and PostgreSQL races.
 This checklist records the additional visual and browser interaction checks.
+
+`tests/browser/live-validation.cjs` checks the debounce delay, focus, error clearing,
+dependent fields, stale responses, expense amounts, and validation before review.
+It intercepts validation responses and sends no uploads or emails.
 
 The repeatable interaction smoke test is `tests/browser/smoke.cjs`. With Playwright
 available to Node, set `BASE_URL`, `FIXTURES_DIR` and `OUTPUT_DIR`, then run it with

@@ -11,7 +11,7 @@ from portal.models import Job
 
 PENDING, RUNNING, DONE, FAILED, CANCELLED = "pending", "running", "done", "failed", "cancelled"
 ACTIVE = (PENDING, RUNNING)
-TARGETS = {"validate": "upload", "render": "claim", "send": "delivery"}
+TARGETS = {"validate": "upload", "render": "claim", "send": "delivery", "confirm": "claim"}
 
 
 def enqueue(kind, target, *, again=False):

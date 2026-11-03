@@ -11,7 +11,7 @@ from django.core.validators import MinValueValidator
 from django.db import models, transaction
 from django.utils import timezone
 
-from portal.constants import DECLARATION, DECLARATION_VERSION
+from portal.constants import DECLARATION, DECLARATION_VERSION, FORM_DESCRIPTION, FORM_TITLE
 from portal.countries import COUNTRIES
 from portal.intake import EXPENSE_FIELD_LENGTHS
 
@@ -175,6 +175,19 @@ class Form(models.Model):
         help_text="Der Link lautet /f/Kurzname/. Nach dem Versenden nicht mehr ändern.",
     )
     name = models.CharField("Name", max_length=200, help_text="Für Teilnehmende sichtbar.")
+    title = models.CharField(
+        "Titel",
+        max_length=200,
+        blank=True,
+        default=FORM_TITLE,
+        help_text="Überschrift über dem Formular. Leer lassen für den Standardtitel.",
+    )
+    description = models.TextField(
+        "Beschreibung",
+        blank=True,
+        default=FORM_DESCRIPTION,
+        help_text="Text unter dem Titel. Leer lassen für die Standardbeschreibung.",
+    )
     field_values = models.JSONField("Interne Werte", default=dict, blank=True)
     purpose_options = models.TextField(
         "Vorgaben zum Anlass/Projektbezug",
@@ -232,6 +245,14 @@ class Form(models.Model):
             and (not self.closes_at or now <= self.closes_at)
             and not self.internal_value_errors()
         )
+
+    @property
+    def display_title(self):
+        return self.title or FORM_TITLE
+
+    @property
+    def display_description(self):
+        return self.description or FORM_DESCRIPTION
 
     def internal_value_errors(self):
         """Labels of internal values that no longer satisfy the current template.
@@ -506,6 +527,17 @@ class Delivery(models.Model):
     state = models.CharField("Versand", max_length=24, default="pending", db_index=True)
     message_id = models.CharField(max_length=100, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
+    error_code = models.CharField(max_length=80, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class Confirmation(models.Model):
+    """The participant's receipt email, independent of PDF processing and Finance delivery."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    claim = models.OneToOneField(Claim, on_delete=models.CASCADE, related_name="confirmation")
+    state = models.CharField(max_length=24, default="pending")
+    message_id = models.CharField(max_length=100, blank=True)
     error_code = models.CharField(max_length=80, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 

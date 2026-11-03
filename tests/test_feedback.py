@@ -12,6 +12,7 @@ from django.core.management import call_command
 from django.template.loader import render_to_string
 from pypdf import PdfReader
 
+from portal.constants import PAYMENT_TIMING
 from portal.jobs import run_one
 from portal.models import Claim, ClaimReferenceCounter
 from portal.services.capacity import temporary_workspace
@@ -123,10 +124,10 @@ def test_reference_is_stable_searchable_and_used_on_confirmation(prepared):
     assert claim.reference == reference
     page = prepared["client"].get(response.json()["receipt_url"]).content.decode()
     assert reference in page
-    assert (
-        "Wir melden uns bei Rückfragen oder zahlen das Geld in der Regel binnen einer Woche aus."
-        in page
-    )
+    assert PAYMENT_TIMING in page
+    assert "14 Tagen" in page and "30 Tage" in page
+    assert "Woche" not in page
+    assert "gespeichert" not in page and "gelöscht" not in page
     assert "Finance" not in page
     output = io.StringIO()
     call_command("claim_status", reference, stdout=output)
@@ -168,7 +169,9 @@ def test_mileage_details_and_reference_reach_pdf_and_email(prepared, settings):
         pass
     claim.refresh_from_db()
     assert claim.delivery.state == "delivered"
-    mail = next((settings.PRIVATE_STORAGE_ROOT / "outbox").glob("*.eml"))
+    from portal.services.storage import outbox_key, path_for
+
+    mail = path_for(outbox_key(claim.delivery.attempts.get().id))
     message = BytesParser(policy=policy.default).parsebytes(mail.read_bytes())
     assert claim.reference in message["Subject"]
     attachment = next(message.iter_attachments())

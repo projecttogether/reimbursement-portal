@@ -105,6 +105,95 @@
     }
     return result;
   }
+  const touched = new Set();
+  let validationTimer, validationVersion = 0, validationRequest = 0;
+  function fieldFeedback(element, message) {
+    const target = document.getElementById(
+      element.dataset.errorId || `error-${element.name}`,
+    );
+    if (target) target.textContent = message;
+    if (message) element.setAttribute("aria-invalid", "true");
+    else element.removeAttribute("aria-invalid");
+  }
+  function localFeedback(element) {
+    if (element.disabled) return "";
+    let message = element.validationMessage;
+    if (element.required && element.type !== "radio" && !element.value.trim())
+      message = "Bitte fülle dieses Feld aus.";
+    if (element.dataset.field === "amount") {
+      const amount = cents(element.value);
+      if (amount === null || amount <= 0n)
+        message = "Bitte gib einen positiven Betrag in Euro ein, z. B. 12,50.";
+    }
+    return message;
+  }
+  function detailData() {
+    const data = {};
+    for (const element of details.querySelectorAll("[name]")) {
+      if (element.type === "radio" && !element.checked) continue;
+      data[element.name] = element.value;
+    }
+    return {
+      ...data,
+      draft_id: config.draft_id,
+      has_mileage: rows.some((row) => row.kind === "mileage"),
+      is_trip: Boolean(tripFields && !form.elements.trip_destination.disabled),
+    };
+  }
+  async function validateDetails(all = false) {
+    const version = validationVersion, request = ++validationRequest;
+    let fields = {};
+    if (!config.preview) {
+      try {
+        const result = await api(config.validate_url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(detailData()),
+        });
+        fields = result.fields;
+      } catch (error) {
+        // Background checks stay quiet on connection failures. Review must retry.
+        if (all && version === validationVersion) showError(error.message);
+        return false;
+      }
+    }
+    if (version !== validationVersion || request !== validationRequest || details.hidden)
+      return false;
+    let valid = true;
+    for (const element of details.querySelectorAll("input,textarea,select")) {
+      if (["file", "hidden"].includes(element.type)) continue;
+      if (!all && !touched.has(element.name || element.id)) continue;
+      const message = element.disabled ? "" :
+        fields[element.name]?.map((error) => error.message).join(" ") ||
+        localFeedback(element);
+      fieldFeedback(element, message);
+      if (message) valid = false;
+    }
+    return valid;
+  }
+  function scheduleValidation(event) {
+    const element = event.target;
+    if (!element.matches("input,textarea,select") || element.type === "file") return;
+    touched.add(element.name || element.id);
+    // Recheck fields whose rules depend on the changed value.
+    const dependencies = {
+      full_name: ["account_holder"], country: ["postal_code"],
+      iban: ["bic"], trip_start: ["trip_end"],
+    };
+    for (const name of dependencies[element.name] || []) {
+      if (name === "bic" || form.elements.namedItem(name)?.value) touched.add(name);
+    }
+    const row = element.closest(".expense-card");
+    if (row) {
+      for (const field of row.querySelectorAll("[data-field]"))
+        if (field.value && field.type !== "checkbox") touched.add(field.id);
+    }
+    validationVersion++;
+    clearTimeout(validationTimer);
+    validationTimer = setTimeout(() => validateDetails(), 650);
+  }
+  details.addEventListener("input", scheduleValidation);
+  details.addEventListener("change", scheduleValidation);
   const amountFormat = new RegExp(`^(?:${config.amount_pattern})$`);
   function money(cents) {
     return new Intl.NumberFormat("de-DE", {
@@ -199,9 +288,15 @@
       const field = form.elements.namedItem(name);
       field.required = needed;
       field.disabled = !needed;
+      if (!needed) fieldFeedback(field, "");
     }
   }
-  receiptTravel?.addEventListener("toggle", updateTravel);
+  receiptTravel?.addEventListener("toggle", () => {
+    updateTravel();
+    validationVersion++;
+    clearTimeout(validationTimer);
+    validationTimer = setTimeout(() => validateDetails(), 650);
+  });
   const fullName = form.elements.namedItem("full_name");
   const accountHolder = form.elements.namedItem("account_holder");
   let accountHolderEdited = false;
@@ -212,6 +307,9 @@
     accountHolderEdited = accountHolder.value !== "";
   });
   function arrangeRows() {
+    validationVersion++;
+    clearTimeout(validationTimer);
+    if (touched.size) validationTimer = setTimeout(() => validateDetails(), 650);
     rows.forEach((row, index) => {
       expensesContainer.append(row.element);
       row.element.querySelector(".row-number").textContent = index + 1;
@@ -396,6 +494,15 @@
       .getElementById(kind === "mileage" ? "mileage-template" : "expense-template")
       .content.firstElementChild.cloneNode(true);
     const row = { id: crypto.randomUUID(), kind, files: [], element };
+    element.querySelectorAll("[data-field]").forEach((field) => {
+      field.id = `expense-${row.id}-${field.dataset.field}`;
+      const error = node("p", "", "field-error");
+      error.id = `error-${field.id}`;
+      error.setAttribute("aria-live", "polite");
+      field.dataset.errorId = error.id;
+      field.setAttribute("aria-describedby", error.id);
+      field.closest(".field").append(error);
+    });
     if (kind === "mileage") {
       element.querySelector('[data-field="travel_date"]').value = config.trip_start;
       element.querySelector('[data-field="return_date"]').value = config.trip_end;
@@ -632,18 +739,28 @@
         image.close();
       });
     });
-  document.getElementById("review-button").addEventListener("click", () => {
+  document.getElementById("review-button").addEventListener("click", async () => {
+    const button = document.getElementById("review-button");
+    if (button.disabled) return;
+    clearTimeout(validationTimer);
     clearErrors();
     if (!rows.length) {
       showError(config.messages.expense_count);
       document.getElementById("add-expense").focus();
       return;
     }
-    for (const element of details.querySelectorAll("input,textarea,select"))
-      if (!element.checkValidity()) {
-        element.reportValidity();
-        return;
-      }
+    button.disabled = true;
+    let valid;
+    try {
+      valid = await validateDetails(true);
+    } finally {
+      button.disabled = false;
+    }
+    if (!valid) {
+      const invalid = details.querySelector('[aria-invalid="true"]');
+      if (invalid) invalid.focus();
+      return;
+    }
     if (
       rows.some(
         (row) =>

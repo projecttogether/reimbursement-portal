@@ -15,6 +15,6 @@
     <small class="text-xs text-muted-foreground">Bitte notiere die Referenz für Rückfragen.</small>
   </div>
   <p id="processing-status" class="flex items-center gap-2 text-sm font-medium" data-status="{{ status }}" data-final="{{ final|yesno:'true,false' }}" aria-live="polite">Dein Antrag wird verarbeitet.</p>
-  <p class="text-sm text-muted-foreground">Wir melden uns bei Rückfragen oder zahlen das Geld in der Regel binnen einer Woche aus.</p>
+  <p class="text-sm text-muted-foreground">{{ payment_timing }}</p>
 </section>
 {% endblock %}{% block scripts %}<script src="{% static 'portal/received.js' %}" defer></script>{% endblock %}

@@ -313,7 +313,7 @@ class FormAdmin(admin.ModelAdmin):
                     },
                 )
             )
-        participant = ["instructions", "purpose_options"]
+        participant = ["title", "description", "instructions", "purpose_options"]
         if template.travel != FormTemplate.Travel.OFF:
             participant += ["trip_start", "trip_end"]
         fieldsets += [

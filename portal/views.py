@@ -12,12 +12,13 @@ from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from portal import intake
+from portal.constants import PAYMENT_TIMING
 from portal.forms import SEPA_COUNTRIES, ClaimForm
 from portal.intake import IntakeError
 from portal.models import Claim, Form, PrivacyNotice
 from portal.participants import RequestParticipant
 from portal.roles import manages
-from portal.services import delivery, uploads
+from portal.services import delivery, drafts, uploads
 from portal.services.capacity import storage_available
 from portal.services.drafts import open_draft
 from portal.services.mailersend import verify_webhook
@@ -89,6 +90,7 @@ def form_page(request, form_slug):
         "trip_end": form.trip_end.isoformat() if form.trip_end else "",
         "upload_url": reverse("upload", kwargs={"form_slug": form.slug}),
         "submit_url": reverse("submit", kwargs={"form_slug": form.slug}),
+        "validate_url": reverse("validate_claim", kwargs={"form_slug": form.slug}),
         **intake.client_config(),
     }
     return render(
@@ -163,6 +165,32 @@ def upload_remove(request, form_slug, upload_id):
 
 @require_POST
 @api_errors
+def validate_claim(request, form_slug):
+    """Validate current entries without saving them or requiring a signature."""
+    data = json.loads(request.body)
+    if not isinstance(data, dict) or not isinstance(data.get("has_mileage", False), bool):
+        raise IntakeError("Ungültige Anfrage.")
+    draft, form = drafts.gate(
+        RequestParticipant(request),
+        form_slug,
+        data.get("draft_id"),
+        draft_token(request),
+        drafts.Action(edits=False, accepts=True, locks_form=False),
+    )
+    if draft.claim_id:
+        raise drafts.AlreadySubmitted(draft)
+    claim_form = ClaimForm(data, form=form, has_mileage=data.get("has_mileage", False))
+    claim_form.is_valid()
+    errors = {
+        name: errors
+        for name, errors in claim_form.errors.get_json_data().items()
+        if name not in {"declaration", "privacy_acknowledged"}
+    }
+    return JsonResponse({"fields": errors})
+
+
+@require_POST
+@api_errors
 def submit(request, form_slug):
     data = json.loads(request.body)
     claim = submit_claim(RequestParticipant(request), form_slug, data)
@@ -188,7 +216,13 @@ def received(request, claim_id):
     return render(
         request,
         "portal/received.html",
-        {"claim": claim, "status": status, "final": final, "form": claim.form},
+        {
+            "claim": claim,
+            "status": status,
+            "final": final,
+            "form": claim.form,
+            "payment_timing": PAYMENT_TIMING,
+        },
     )
 
 
