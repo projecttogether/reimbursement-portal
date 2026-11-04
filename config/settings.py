@@ -37,6 +37,7 @@ MIDDLEWARE = [
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "portal.middleware.RequestLimitsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
+    "portal.middleware.AdminSessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",

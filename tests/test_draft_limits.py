@@ -1,7 +1,9 @@
 from datetime import timedelta
 
 import pytest
+from django.contrib.sessions.backends.db import SessionStore
 from django.contrib.sessions.models import Session
+from django.core.management import call_command
 from django.test import Client, RequestFactory
 from django.utils import timezone
 
@@ -10,6 +12,24 @@ from portal.participants import client_network
 from portal.services.retention import cleanup
 
 pytestmark = pytest.mark.django_db
+
+
+@pytest.mark.django_db(transaction=True)
+def test_worker_removes_expired_sessions_and_preserves_active_sessions(settings):
+    settings.CONTENT_PURGE_ENABLED = False
+    expired, active = SessionStore(), SessionStore()
+    for session in (expired, active):
+        session["marker"] = "synthetic"
+        session.save()
+    Session.objects.filter(pk=expired.session_key).update(
+        expire_date=timezone.now() - timedelta(seconds=1)
+    )
+    cleanup(execute=False)
+    assert Session.objects.count() == 2
+    call_command("run_jobs", once=True)
+    assert not Session.objects.filter(pk=expired.session_key).exists()
+    assert Session.objects.filter(pk=active.session_key).exists()
+    assert SessionStore(active.session_key)["marker"] == "synthetic"
 
 
 def test_cookie_resets_cannot_exhaust_draft_capacity(form, settings):

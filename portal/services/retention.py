@@ -1,5 +1,6 @@
 import logging
 from datetime import timedelta
+from importlib import import_module
 
 from django.conf import settings
 from django.db import transaction
@@ -147,6 +148,8 @@ def cleanup(*, execute=False):
     }
     if not execute:
         return result
+    # Session expiry denies access but does not remove stored tokens or metadata.
+    import_module(settings.SESSION_ENGINE).SessionStore.clear_expired()
     DraftAdmission.objects.filter(window_start__lt=now - timedelta(days=2)).delete()
     for claim_id in pdfs if settings.CONTENT_PURGE_ENABLED else []:
         try:

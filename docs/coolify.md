@@ -56,7 +56,9 @@ Add a **Group Membership** mapper to the client's dedicated scope: token claim n
 | `/projecttogether/tools/reimbursement-portal` (`KEYCLOAK_EDITOR_GROUP`) | Form editors: create forms from templates, see their forms' claims |
 
 Sign-in requires a verified email address and one of the groups. Roles are taken
-from the groups at every sign-in; an admin session lasts at most eight hours.
+from the groups at every sign-in; an admin session expires eight hours after
+successful authentication, even when the session changes. Sessions issued with the
+older inactivity timeout require a fresh sign-in after upgrading.
 Copy the client ID into `OIDC_CLIENT_ID`. The secret is in the client's
 **Credentials** tab (Client Authenticator "Client Id and Secret"); copy it into
 `OIDC_CLIENT_SECRET`. Regenerating it there invalidates the old value.

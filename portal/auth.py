@@ -8,6 +8,7 @@ only from the verified `groups` claim of every sign-in.
 import logging
 import math
 import time
+from datetime import timedelta
 from urllib.parse import urlencode
 
 from django.conf import settings
@@ -127,5 +128,6 @@ class KeycloakBackend(OIDCAuthenticationBackend):
 class AdminCallbackView(OIDCAuthenticationCallbackView):
     def login_success(self):
         response = super().login_success()
-        self.request.session.set_expiry(settings.ADMIN_SESSION_SECONDS)
+        # An inactivity timeout would let ordinary session writes prolong admin access.
+        self.request.session.set_expiry(timedelta(seconds=settings.ADMIN_SESSION_SECONDS))
         return response
