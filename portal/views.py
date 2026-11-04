@@ -13,12 +13,12 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 
 from portal import intake
 from portal.constants import PAYMENT_TIMING
-from portal.forms import SEPA_COUNTRIES, ClaimForm
+from portal.forms import ClaimForm
 from portal.intake import IntakeError
 from portal.models import Claim, Form, PrivacyNotice
 from portal.participants import RequestParticipant
 from portal.roles import manages
-from portal.services import delivery, drafts, uploads
+from portal.services import claim_validation, delivery, drafts, uploads
 from portal.services.capacity import storage_available
 from portal.services.drafts import open_draft
 from portal.services.mailersend import verify_webhook
@@ -81,7 +81,6 @@ def form_page(request, form_slug):
         "draft_id": str(draft.id) if draft else "",
         "token": token,
         "preview": preview,
-        "sepa_countries": sorted(SEPA_COUNTRIES),
         "travel": template.travel,
         "mileage_rate": str(template.mileage_rate) if template.mileage_enabled else None,
         "purpose_options": bool(form.purpose_choices()),
@@ -168,7 +167,7 @@ def upload_remove(request, form_slug, upload_id):
 def validate_claim(request, form_slug):
     """Validate current entries without saving them or requiring a signature."""
     data = json.loads(request.body)
-    if not isinstance(data, dict) or not isinstance(data.get("has_mileage", False), bool):
+    if not isinstance(data, dict):
         raise IntakeError("Ungültige Anfrage.")
     draft, form = drafts.gate(
         RequestParticipant(request),
@@ -179,14 +178,7 @@ def validate_claim(request, form_slug):
     )
     if draft.claim_id:
         raise drafts.AlreadySubmitted(draft)
-    claim_form = ClaimForm(data, form=form, has_mileage=data.get("has_mileage", False))
-    claim_form.is_valid()
-    errors = {
-        name: errors
-        for name, errors in claim_form.errors.get_json_data().items()
-        if name not in {"declaration", "privacy_acknowledged"}
-    }
-    return JsonResponse({"fields": errors})
+    return JsonResponse({"fields": claim_validation.review(data, form).errors})
 
 
 @require_POST

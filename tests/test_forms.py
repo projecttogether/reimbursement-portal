@@ -331,7 +331,7 @@ def test_form_closes_when_its_template_gains_a_required_value(prepared):
 
 def test_claim_total_cannot_exceed_the_stored_precision(prepared, monkeypatch):
     assert MAX_CLAIM_TOTAL == Decimal("9999999999.99")
-    monkeypatch.setattr("portal.services.submissions.MAX_CLAIM_TOTAL", Decimal("10"))
+    monkeypatch.setattr("portal.services.claim_validation.MAX_CLAIM_TOTAL", Decimal("10"))
     response = post(prepared)
     assert response.status_code == 400
     assert "Summe" in response.json()["error"]

@@ -66,9 +66,27 @@ optional reference, amount and one to three receipts. A *mileage* row has date,
 route, one-way distance and return trip; its amount is distance × the template's
 rate, calculated on the server, and proofs are optional.
 
+**Claim validation**: checking and normalizing Claim fields and Expense rules,
+including mileage, receipt associations and exact totals. Validation alone does not
+accept a Draft or create a Claim. `services/claim_validation.py` owns the shared
+rules behind `review` and `submission`; `portal/forms.py` owns the Claim field rules.
+Submission validation adds consent and a Signature ID. Acceptance separately checks
+the Draft gate and stored Uploads under locks. Browser feedback shows edited fields
+and their dependencies; review checks everything. Expense errors use stable row IDs.
+
 **Upload**: a receipt (attached to an expense) or a signature. Uploads are `pending`
 until scanned and normalized, then `ready` or `failed`. An upload is *busy* while its
 validation runs or an execution workspace holds it (`services/uploads.py`).
+
+**Signature**: the participant's drawn or selected signature and its Upload. The
+browser retains the Upload's deletion handle after a failed check, and resumes a
+pending check using the same Upload. Starting a new drawing makes the previous
+Upload obsolete. Replacement deletes the previous Upload before sending another;
+a deletion failure retains its handle. Returning to editing clears the Signature
+before resetting consent. `portal/static/portal/signature.js` owns identity,
+replacement, readiness, retry and obsolete results. `form.js` supplies the HTTP
+adapter and renders the canvas, controls and consent. Lifecycle tests use a local
+adapter with controlled Upload outcomes and do not need a browser.
 
 **Intake limits**: the file counts, sizes, page limits, amount and distance formats
 and participant messages that the form, its script and server validation

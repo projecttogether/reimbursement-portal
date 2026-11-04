@@ -48,6 +48,13 @@ Form editors set each form's public title and description in the admin area unde
 wording changes do not invalidate open drafts. Entries are checked 650 ms after
 typing stops. Inline messages appear for edited fields and their dependencies;
 the review button validates every field using the same server rules as submission.
+Live checks and review send Claim fields and Expense rows, including Upload IDs but
+no file contents, to the shared Claim validation module. It derives mileage presence
+from those rows, normalizes dates and registration, and checks amounts, receipt
+associations and exact totals. Expense field errors retain their row IDs when rows
+move. Live feedback only shows edited fields and affected dependencies. Consent and
+Signature remain submission requirements. Receipt readiness stays a browser check
+before review and an authoritative server check under the acceptance locks.
 
 The source's internal KST and KTR values, and any other internal value such as an
 ID, are template fields whose values each form sets (`Form.field_values`). They are
