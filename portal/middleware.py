@@ -1,10 +1,31 @@
 import uuid
+from datetime import datetime
 
 from django.conf import settings
+from django.contrib.auth import BACKEND_SESSION_KEY, SESSION_KEY
 from django.core.files.uploadhandler import StopUpload, TemporaryFileUploadHandler
 from django.http import JsonResponse
+from django.utils import timezone
 
 from portal import intake
+
+
+class AdminSessionMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        if request.session.get(SESSION_KEY) and request.session.get(BACKEND_SESSION_KEY) == (
+            "portal.auth.KeycloakBackend"
+        ):
+            try:
+                expiry = datetime.fromisoformat(request.session.get("_session_expiry"))
+            except (TypeError, ValueError):
+                expiry = None
+            if expiry is None or timezone.is_naive(expiry) or expiry <= timezone.now():
+                # Old inactivity-based sessions must reauthenticate before any session write.
+                request.session.flush()
+        return self.get_response(request)
 
 
 class BoundedUploadHandler(TemporaryFileUploadHandler):

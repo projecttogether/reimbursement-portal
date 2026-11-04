@@ -81,7 +81,7 @@ def test_draft_form_is_closed_but_owners_can_preview(client, form):
     assert client.get("/f/test/").status_code == 403
     user = get_user_model().objects.create_user("editor-subject", email="editor@example.invalid")
     roles.assign(user, {roles.FORM_EDITOR})
-    client.force_login(user)
+    client.force_login(user, backend="django.contrib.auth.backends.ModelBackend")
     assert client.get("/f/test/").status_code == 403
     form.owners.add(user)
     response = client.get("/f/test/")

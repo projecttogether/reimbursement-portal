@@ -22,7 +22,7 @@ pytestmark = pytest.mark.django_db
 
 def test_admin_can_save_individual_form_title_and_description(client, form, django_user_model):
     admin = django_user_model.objects.create_superuser("admin", "admin@example.invalid", "test")
-    client.force_login(admin)
+    client.force_login(admin, backend="django.contrib.auth.backends.ModelBackend")
     url = f"/admin/portal/form/{form.pk}/change/"
     page = client.get(url).content.decode()
     assert 'name="title"' in page and 'name="description"' in page

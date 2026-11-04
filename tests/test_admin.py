@@ -36,7 +36,10 @@ def user_with(role, name):
 
 @pytest.fixture
 def admin_client(client):
-    client.force_login(user_with(roles.TEMPLATE_ADMIN, "admin"))
+    client.force_login(
+        user_with(roles.TEMPLATE_ADMIN, "admin"),
+        backend="django.contrib.auth.backends.ModelBackend",
+    )
     return client
 
 
@@ -135,7 +138,10 @@ def test_logout_ends_the_keycloak_session(oidc, settings):
 
 
 def test_users_without_a_role_cannot_use_the_admin(client):
-    client.force_login(get_user_model().objects.create_user("nobody"))
+    client.force_login(
+        get_user_model().objects.create_user("nobody"),
+        backend="django.contrib.auth.backends.ModelBackend",
+    )
     assert client.get("/admin/").status_code == 302
 
 
@@ -193,7 +199,7 @@ def test_editors_see_only_their_forms_and_claims(client, editor, accepted):
         support_email="finance@example.invalid",
     )
     other.owners.add(editor)
-    client.force_login(editor)
+    client.force_login(editor, backend="django.contrib.auth.backends.ModelBackend")
     forms = client.get("/admin/portal/form/").content.decode()
     assert "Andere Werkstatt" in forms and "Test Workshop" not in forms
     assert client.get(f"/admin/portal/form/{accepted.form.pk}/change/").status_code == 302
@@ -209,7 +215,7 @@ def test_editors_see_only_their_forms_and_claims(client, editor, accepted):
 
 
 def test_editors_cannot_change_templates_or_the_privacy_notice(client, editor, template):
-    client.force_login(editor)
+    client.force_login(editor, backend="django.contrib.auth.backends.ModelBackend")
     assert client.get(f"/admin/portal/formtemplate/{template.pk}/change/").status_code == 200
     response = client.post(f"/admin/portal/formtemplate/{template.pk}/change/", {"name": "X"})
     assert response.status_code == 403
@@ -236,11 +242,14 @@ def test_only_template_admins_choose_the_start_page_form(client, editor, form):
     )
     url = f"/admin/portal/form/{form.pk}/change/"
     form.owners.add(editor)
-    client.force_login(editor)
+    client.force_login(editor, backend="django.contrib.auth.backends.ModelBackend")
     assert client.post(url, data).status_code == 302
     form.refresh_from_db()
     assert not form.primary
-    client.force_login(user_with(roles.TEMPLATE_ADMIN, "admin"))
+    client.force_login(
+        user_with(roles.TEMPLATE_ADMIN, "admin"),
+        backend="django.contrib.auth.backends.ModelBackend",
+    )
     assert client.post(url, data).status_code == 302
     form.refresh_from_db()
     current.refresh_from_db()
@@ -369,7 +378,7 @@ def test_publication_keeps_the_opening_schedule(admin_client, form):
 
 
 def test_autosave_and_publication_require_ownership(client, editor, form):
-    client.force_login(editor)
+    client.force_login(editor, backend="django.contrib.auth.backends.ModelBackend")
     url = f"/admin/portal/form/{form.pk}/change/"
     response = client.post(url, form_settings(form, _publication="unpublish"))
     assert response.status_code == 404
@@ -525,7 +534,7 @@ def test_sidebar_shows_the_admin_section_only_to_template_admins(admin_client, c
     assert 'href="/admin/portal/formtemplate/"' in page
     assert "Willkommen" not in page and "Website anzeigen" not in page
     assert "/realms/projecttogether/account/" in page
-    client.force_login(editor)
+    client.force_login(editor, backend="django.contrib.auth.backends.ModelBackend")
     page = client.get("/admin/portal/claim/").content.decode()
     assert 'href="/admin/portal/claim/"' in page
     assert 'href="/admin/portal/formtemplate/"' not in page
@@ -538,7 +547,7 @@ def test_only_template_admins_see_that_content_purge_is_disabled(admin_client, e
     settings.CONTENT_PURGE_ENABLED = False
     page = admin_client.get("/admin/portal/claim/").content.decode()
     assert notice in page and "30 Tage nach dem Einreichen" in page
-    admin_client.force_login(editor)
+    admin_client.force_login(editor, backend="django.contrib.auth.backends.ModelBackend")
     assert notice not in admin_client.get("/admin/portal/claim/").content.decode()
 
 
@@ -549,7 +558,7 @@ def suggestions(client, query):
 
 
 def test_search_finds_only_what_the_person_may_open(client, editor, accepted, template):
-    client.force_login(editor)
+    client.force_login(editor, backend="django.contrib.auth.backends.ModelBackend")
     assert suggestions(client, "Alex") == {}
     assert suggestions(client, template.name[:6]) == {}
     accepted.form.owners.add(editor)
