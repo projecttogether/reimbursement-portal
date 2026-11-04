@@ -191,8 +191,10 @@ code locations while excluding exception values, source text, bodies, paths,
 headers and local variables. Use request IDs and operational references to
 investigate failures without putting financial content in logs.
 
-The worker reclaims expired leases and runs cleanup each minute. Reservations older
-than a job lease are reclaimed when their execution lock is free, including after
+The worker reclaims expired leases and runs cleanup each minute, including deletion
+of expired Django sessions through the configured session backend. Active sessions
+are preserved; session cleanup runs even when claim content purge is disabled.
+Reservations older than a job lease are reclaimed when their execution lock is free, including after
 a restart clears tmpfs. Both supervisor and parser hold the lock, so a stale job
 cannot cause cleanup to remove a live parser's workspace. An interrupted
 validation keeps its admitted output reservation while awaiting another attempt.
