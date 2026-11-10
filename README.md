@@ -44,7 +44,8 @@ editors create forms from a template, set its internal values and purpose option
 and share the link `/f/<slug>/`. New forms start as drafts and settings save
 automatically. **Veröffentlichen** makes a valid form available during its configured
 opening period; **Unveröffentlichen** returns it to a draft. Both see the submitted claims of their forms;
-template admins can retry processing and delivery.
+template admins can retry processing and delivery, and delete claims after
+confirming with a reason.
 
 ## Deploy with Coolify
 

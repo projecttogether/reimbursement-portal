@@ -1,10 +1,12 @@
 """The admin area: templates, forms, the privacy notice and claims, behind PT Login."""
 
+import logging
 import uuid
 
 from django import forms
 from django.conf import settings
 from django.contrib import admin, messages
+from django.contrib.admin import helpers
 from django.core.exceptions import PermissionDenied
 from django.db import IntegrityError
 from django.http import Http404, HttpResponseRedirect, JsonResponse
@@ -27,6 +29,8 @@ from portal.models import (
 from portal.roles import is_form_editor, is_template_admin
 from portal.services import delivery, operations, publication, retention
 from portal.templatetags.ui import render_component
+
+logger = logging.getLogger(__name__)
 
 
 class PortalAdminSite(admin.AdminSite):
@@ -494,6 +498,8 @@ STATUS_TONES = {
 
 STATUS_LABELS = {**dict(Claim.State.choices), **DELIVERY_STATUS}
 
+DELETED_STATES = (Claim.State.PURGING, Claim.State.PURGED)
+
 
 def claim_status_parts(claim):
     state = delivery.operator_status(claim).state
@@ -522,6 +528,18 @@ class RetryForm(forms.Form):
     )
 
 
+class DeleteForm(forms.Form):
+    reason = forms.CharField(
+        label="Grund", max_length=500, widget=forms.Textarea(attrs={"rows": 3})
+    )
+
+
+# A bulk deletion purges in the request; larger cleanups run in several steps.
+MAX_BULK_DELETE = 100
+
+OPERATION_LABELS = {"retry": "Erneut verarbeitet", "delete": "Gelöscht"}
+
+
 class OperationInline(admin.TabularInline):
     model = Operation
     extra = 0
@@ -546,7 +564,7 @@ class OperationInline(admin.TabularInline):
 
     @admin.display(description="Aktion")
     def what(self, obj):
-        return obj.action
+        return OPERATION_LABELS.get(obj.action, obj.action)
 
     @admin.display(description="Durch")
     def who(self, obj):
@@ -576,6 +594,7 @@ class ClaimAdmin(admin.ModelAdmin):
     search_fields = ["full_name", "email", "=bookkeeping_reference"]
     date_hierarchy = "submitted_at"
     inlines = [OperationInline]
+    actions = ["delete_claims"]
     fieldsets = [
         (
             None,
@@ -658,6 +677,10 @@ class ClaimAdmin(admin.ModelAdmin):
             return render_component("badge", "Überfällig", variant="warning")
         return "—"
 
+    def has_purge_permission(self, request):
+        """Deleting a claim's content is an operator action, like a retry."""
+        return is_template_admin(request.user)
+
     def get_urls(self):
         return [
             path(
@@ -665,16 +688,120 @@ class ClaimAdmin(admin.ModelAdmin):
                 self.admin_site.admin_view(self.retry_view),
                 name="portal_claim_retry",
             ),
+            path(
+                "<uuid:claim_id>/loeschen/",
+                self.admin_site.admin_view(self.purge_view),
+                name="portal_claim_purge",
+            ),
             *super().get_urls(),
         ]
 
     def change_view(self, request, object_id, form_url="", extra_context=None):
+        claim = self.get_object(request, object_id)
+        # A deleted claim has nothing left to process or delete.
+        operable = (
+            claim is not None
+            and is_template_admin(request.user)
+            and claim.state not in DELETED_STATES
+        )
         extra_context = {
             **(extra_context or {}),
-            "can_retry": is_template_admin(request.user),
+            "can_retry": operable,
             "retry_url": reverse("admin:portal_claim_retry", args=[object_id]),
+            "can_purge": operable,
+            "purge_url": reverse("admin:portal_claim_purge", args=[object_id]),
         }
         return super().change_view(request, object_id, form_url, extra_context)
+
+    def purge_view(self, request, claim_id):
+        if not self.has_purge_permission(request):
+            raise PermissionDenied
+        claim = get_object_or_404(self.get_queryset(request), pk=claim_id)
+        if claim.state in DELETED_STATES:
+            messages.info(request, "Dieser Antrag wurde bereits gelöscht.")
+            return redirect("admin:portal_claim_change", claim.pk)
+        form = DeleteForm(request.POST or None)
+        if request.method == "POST" and form.is_valid():
+            refused = self._delete(request, [claim], form.cleaned_data["reason"])
+            if not refused:
+                return redirect("admin:portal_claim_changelist")
+            form.add_error(None, refused[0][1])
+        return self._delete_confirmation(request, [claim], form)
+
+    @admin.action(description="Ausgewählte Anträge löschen", permissions=["purge"])
+    def delete_claims(self, request, queryset):
+        claims = list(queryset.exclude(state__in=DELETED_STATES)[: MAX_BULK_DELETE + 1])
+        if not claims:
+            messages.info(request, "Die ausgewählten Anträge wurden bereits gelöscht.")
+            return None
+        if len(claims) > MAX_BULK_DELETE:
+            messages.error(request, f"Bitte wähle höchstens {MAX_BULK_DELETE} Anträge auf einmal.")
+            return None
+        # The changelist's action form submits first; the confirmation page sends `post`.
+        form = DeleteForm(request.POST if request.POST.get("post") == "yes" else None)
+        if form.is_valid():
+            for claim, message in self._delete(request, claims, form.cleaned_data["reason"]):
+                messages.error(request, f"{claim.reference}: {message}")
+            return None
+        return self._delete_confirmation(request, claims, form, bulk=True)
+
+    def _delete(self, request, claims, reason):
+        """Delete each claim and report the outcome. Returns the refused claims and why."""
+        deleted, resuming, refused = 0, 0, []
+        for claim in claims:
+            try:
+                operations.delete(
+                    claim.pk, actor=request.user.email or request.user.get_username(), reason=reason
+                )
+            except operations.ActionRefused as exc:
+                refused.append((claim, str(exc)))
+            except (OSError, retention.ClaimBusy):
+                # The claim stays purging; the worker's cleanup finishes it.
+                logger.error("purge_failed reference=%s", claim.pk)
+                resuming += 1
+            else:
+                deleted += 1
+        if deleted:
+            messages.success(
+                request,
+                "Der Antrag wurde gelöscht."
+                if deleted == 1
+                else f"{deleted} Anträge wurden gelöscht.",
+            )
+        if resuming:
+            messages.warning(
+                request,
+                "Die Löschung wurde begonnen und wird in wenigen Minuten automatisch "
+                f"abgeschlossen ({resuming} {'Antrag' if resuming == 1 else 'Anträge'}).",
+            )
+        return refused
+
+    def _delete_confirmation(self, request, claims, form, *, bulk=False):
+        rows = [
+            {
+                "claim": claim,
+                "status_badge": claim_status_badge(claim),
+                "sent": delivery.may_have_reached_finance(claim),
+            }
+            for claim in claims
+        ]
+        sent = sum(row["sent"] for row in rows)
+        return TemplateResponse(
+            request,
+            "admin/portal/claim/delete.html",
+            {
+                **self.admin_site.each_context(request),
+                "opts": self.model._meta,
+                "title": "Antrag löschen?" if len(rows) == 1 else f"{len(rows)} Anträge löschen?",
+                "rows": rows,
+                "sent_count": sent,
+                "unsent_count": len(rows) - sent,
+                "form": form,
+                "bulk": bulk,
+                "action_checkbox_name": helpers.ACTION_CHECKBOX_NAME,
+                "record_days": retention.PURGED_RECORD_DAYS,
+            },
+        )
 
     def retry_view(self, request, claim_id):
         if not is_template_admin(request.user):

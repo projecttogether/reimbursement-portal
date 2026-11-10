@@ -59,7 +59,8 @@ request; `RequestParticipant` adapts a request.
 **Claim**: the immutable record created when a draft is accepted. Its states are
 `received → rendering → ready`, or `processing_failed`, then `purging → purged`.
 After delivery its PDF is removed at `pdf_due` (7 days) and all content at
-`retention_due` (30 days after submission) (`services/retention.py`).
+`retention_due` (30 days after submission) (`services/retention.py`). A template admin
+can delete a claim earlier: an operator action that purges it at once.
 
 **Expense**: one row of a claim, in EUR. A *receipt* row has merchant, purpose,
 optional reference, amount and one to three receipts. A *mileage* row has date,
@@ -116,7 +117,7 @@ MailerSend). Outcomes: `provider_accepted`, `paused`, `delivered`, `failed`, or
 **Delivery evidence**: a signed webhook event or a reconciliation lookup that updates
 an attempt. Evidence never sends anything.
 
-**Operator action**: an audited retry from the admin area or `retry_claim`
+**Operator action**: an audited retry or deletion from the admin area, or `retry_claim`
 (`services/operations.py`).
 
 **Duplicate risk**: an operator resend of a delivery that is not definitely `failed`.

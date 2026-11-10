@@ -22,6 +22,9 @@ from portal.services.storage import outbox_key, remove_keys, sweep_orphans
 
 logger = logging.getLogger(__name__)
 
+# How long the minimal reference/status record of a purged claim remains.
+PURGED_RECORD_DAYS = 30
+
 
 class ClaimBusy(Exception):
     """A job or execution workspace still uses the claim; purge later."""
@@ -32,19 +35,28 @@ def purge_disabled_in_production():
     return settings.DEPLOYMENT_ENV == "production" and not settings.CONTENT_PURGE_ENABLED
 
 
+def begin_purge(claim):
+    """Mark a claim the caller has locked as purging and cancel its jobs.
+
+    Raises ClaimBusy while a job or execution workspace still uses it. Once marked, the
+    worker's cleanup finishes the purge even if the caller is interrupted.
+    """
+    if (
+        queue.claim_has_running_job(claim)
+        or WorkspaceReservation.objects.filter(Q(claim=claim) | Q(upload__claim=claim)).exists()
+    ):
+        raise ClaimBusy
+    claim.state = Claim.State.PURGING
+    claim.save(update_fields=["state"])
+    queue.cancel_claim_jobs(claim)
+
+
 def purge_claim(claim_id):
     with transaction.atomic():
         claim = Claim.objects.select_for_update().get(pk=claim_id)
         if claim.state == Claim.State.PURGED:
             return
-        if (
-            queue.claim_has_running_job(claim)
-            or WorkspaceReservation.objects.filter(Q(claim=claim) | Q(upload__claim=claim)).exists()
-        ):
-            raise ClaimBusy
-        claim.state = Claim.State.PURGING
-        claim.save(update_fields=["state"])
-        queue.cancel_claim_jobs(claim)
+        begin_purge(claim)
     # Leave the manifest intact until every deletion succeeds, so a crash resumes safely.
     for upload in claim.uploads.all():
         uploads.remove_files(upload)
@@ -179,7 +191,9 @@ def cleanup(*, execute=False):
         attempt__isnull=True, received_at__lt=now - timedelta(days=30)
     ).delete()
     # Minimal reference/status records have a bounded operational lifetime.
-    Claim.objects.filter(state=Claim.State.PURGED, purged_at__lt=now - timedelta(days=30)).delete()
+    Claim.objects.filter(
+        state=Claim.State.PURGED, purged_at__lt=now - timedelta(days=PURGED_RECORD_DAYS)
+    ).delete()
     orphan_cleanup()
     return result
 
