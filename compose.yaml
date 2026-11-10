@@ -51,7 +51,7 @@ services:
       retries: 5
     mem_limit: 512m
   scanner:
-    image: clamav/clamav:1.4@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260
+    image: clamav/clamav:1.5@sha256:e19130cdebaeacc71fa46eab3ed6f69941f2f22aa5e08d55e9197f8edf43ce5e
     volumes:
       - scanner_data:/var/lib/clamav
     restart: unless-stopped
