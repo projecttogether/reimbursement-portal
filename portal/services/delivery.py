@@ -214,6 +214,12 @@ def has_duplicate_risk(delivery):
     return delivery.state != FAILED
 
 
+def may_have_reached_finance(claim):
+    """Some send of the claim's PDF did not definitely fail, so Finance may hold a copy."""
+    delivery = getattr(claim, "delivery", None)
+    return bool(delivery and delivery.attempts.exclude(state=FAILED).exists())
+
+
 def retry(claim, *, acknowledge_duplicate_risk=False):
     """Operator retry. Only a definite failure is retried without acknowledgment."""
     delivery = Delivery.objects.select_for_update().get(claim=claim)

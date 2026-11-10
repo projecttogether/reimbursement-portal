@@ -135,8 +135,20 @@ an approved private process.
 
 Template admins can retry a claim in the admin area (Anträge > Erneut verarbeiten);
 it records their PT Login address and reason. Form editors see the claims of their
-forms, with name, email, total and status, but no banking or receipt data. The
-commands below run through authorized host access and record the host actor.
+forms, with name, email, total and status, but no banking or receipt data.
+
+Template admins can also delete claims, for example test submissions: **Löschen** on
+a claim, or the list action **Ausgewählte Anträge löschen** for up to 100 at once.
+A confirmation page lists the claims and says whether Finance may already hold their
+PDF; deletion needs a reason and records it with their address. It purges the claim
+immediately, also while `CONTENT_PURGE_ENABLED=0`: files, personal and banking data
+are removed, and pending processing or sending stops. A claim that is currently being
+rendered or sent cannot be deleted until that finishes. A copy already sent to Finance
+or Moss is not affected. As after a retention purge, the reference UUID, form, status
+and the logged action stay visible for 30 days. Each deletion also logs
+`claim_deleted reference=<uuid>`.
+
+The commands below run through authorized host access and record the host actor.
 Use operational reasons without participant names, account details, or receipt text.
 
 ```bash
@@ -234,7 +246,8 @@ path cannot promise survival of total host loss since the last backup; zero-loss
 acceptance requires off-host file durability and matching database durability.
 
 After restoring, leave the public web service stopped. Run overdue purges, apply
-any separately recorded exceptional deletions, and inspect interrupted deliveries
+any separately recorded exceptional deletions, including admin deletions logged as
+`claim_deleted`, and inspect interrupted deliveries
 before restarting processing. Never automatically resend every restored job.
 Test a restore using dummy data and verify database/file consistency, unknown-send
 handling, and deletion. Keep exceptional deletion evidence outside the rollback

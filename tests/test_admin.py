@@ -11,7 +11,7 @@ from mozilla_django_oidc.auth import OIDCAuthenticationBackend
 
 from portal import roles
 from portal.auth import KeycloakBackend, keycloak_logout_url
-from portal.models import Claim, Form, Job, Operation, PrivacyNotice
+from portal.models import Claim, DeliveryAttempt, Form, Job, Operation, PrivacyNotice
 
 pytestmark = pytest.mark.django_db
 
@@ -514,6 +514,125 @@ def test_admin_resend_requires_duplicate_risk_acknowledgment(admin_client, deliv
     assert response.status_code == 302
     delivery.refresh_from_db()
     assert delivery.state == "pending"
+
+
+def second_claim(form):
+    return Claim.objects.create(
+        form=form,
+        full_name="Sam Zweitens",
+        email="second@example.invalid",
+        street="Teststraße 2",
+        postal_code="12345",
+        city="Berlin",
+        country="DE",
+        account_holder="Sam Zweitens",
+        iban="DE89370400440532013000",
+        purpose="Synthetischer Test",
+        snapshot={},
+    )
+
+
+def test_admin_deletes_a_claim_only_after_confirmation(admin_client, accepted):
+    purge_url = f"/admin/portal/claim/{accepted.pk}/loeschen/"
+    page = admin_client.get(f"/admin/portal/claim/{accepted.pk}/change/").content.decode()
+    assert purge_url in page
+    response = admin_client.get(purge_url)
+    page = response.content.decode()
+    assert response.status_code == 200
+    assert "Antrag endgültig löschen" in page and "Abbrechen" in page
+    assert "Noch nicht an Finance gesendet" in page and "Alex Beispiel" in page
+    assert admin_client.post(purge_url, {"reason": ""}).status_code == 200
+    accepted.refresh_from_db()
+    assert accepted.state == Claim.State.RECEIVED and accepted.iban
+    response = admin_client.post(purge_url, {"reason": "Testeinreichung"})
+    assert response.status_code == 302 and response.url == "/admin/portal/claim/"
+    accepted.refresh_from_db()
+    assert accepted.state == Claim.State.PURGED and not accepted.iban
+    operation = Operation.objects.get()
+    assert (operation.action, operation.actor, operation.reason) == (
+        "delete",
+        "admin@example.invalid",
+        "Testeinreichung",
+    )
+    page = admin_client.get(f"/admin/portal/claim/{accepted.pk}/change/").content.decode()
+    assert purge_url not in page and "Erneut verarbeiten" not in page
+    assert "Testeinreichung" in page
+    assert admin_client.get(purge_url).status_code == 302
+
+
+def test_deletion_warns_when_finance_may_already_hold_the_pdf(admin_client, delivery):
+    DeliveryAttempt.objects.create(delivery=delivery, state="delivered")
+    page = admin_client.get(f"/admin/portal/claim/{delivery.claim_id}/loeschen/").content.decode()
+    assert "Bereits an Finance gesendet" in page
+    assert "Noch nicht an Finance gesendet" not in page
+
+
+def test_deletion_is_refused_while_the_claim_is_processed(admin_client, accepted):
+    Job.objects.filter(kind="render").update(state="running")
+    response = admin_client.post(
+        f"/admin/portal/claim/{accepted.pk}/loeschen/", {"reason": "Testeinreichung"}
+    )
+    assert response.status_code == 200 and "gerade verarbeitet" in response.content.decode()
+    accepted.refresh_from_db()
+    assert accepted.state == Claim.State.RECEIVED
+    assert not Operation.objects.exists()
+
+
+def test_an_interrupted_deletion_reports_that_cleanup_finishes_it(
+    admin_client, accepted, monkeypatch
+):
+    def interrupted(claim_id):
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr("portal.services.retention.purge_claim", interrupted)
+    response = admin_client.post(
+        f"/admin/portal/claim/{accepted.pk}/loeschen/", {"reason": "Testeinreichung"}, follow=True
+    )
+    assert "wird in wenigen Minuten automatisch abgeschlossen" in response.content.decode()
+    accepted.refresh_from_db()
+    assert accepted.state == Claim.State.PURGING
+    assert Operation.objects.get().action == "delete"
+
+
+def test_bulk_deletion_confirms_then_deletes_the_selected_claims(admin_client, accepted):
+    other = second_claim(accepted.form)
+    selected = [str(accepted.pk), str(other.pk)]
+    assert "delete_claims" in admin_client.get("/admin/portal/claim/").content.decode()
+    response = admin_client.post(
+        "/admin/portal/claim/",
+        {"action": "delete_claims", "_selected_action": selected, "index": "0"},
+    )
+    page = response.content.decode()
+    assert response.status_code == 200 and "2 Anträge endgültig löschen" in page
+    assert "Alex Beispiel" in page and "Sam Zweitens" in page
+    assert not Claim.objects.filter(state=Claim.State.PURGED).exists()
+    confirmation = {"action": "delete_claims", "_selected_action": selected, "post": "yes"}
+    response = admin_client.post("/admin/portal/claim/", {**confirmation, "reason": ""})
+    assert response.status_code == 200
+    assert not Claim.objects.filter(state=Claim.State.PURGED).exists()
+    response = admin_client.post("/admin/portal/claim/", {**confirmation, "reason": "Tests"})
+    assert response.status_code == 302
+    assert Claim.objects.filter(state=Claim.State.PURGED).count() == 2
+    assert Operation.objects.filter(action="delete", reason="Tests").count() == 2
+
+
+def test_editors_cannot_delete_claims(client, editor, accepted):
+    accepted.form.owners.add(editor)
+    client.force_login(editor, backend="django.contrib.auth.backends.ModelBackend")
+    purge_url = f"/admin/portal/claim/{accepted.pk}/loeschen/"
+    assert (
+        purge_url not in client.get(f"/admin/portal/claim/{accepted.pk}/change/").content.decode()
+    )
+    assert "delete_claims" not in client.get("/admin/portal/claim/").content.decode()
+    assert client.get(purge_url).status_code == 403
+    assert client.post(purge_url, {"reason": "Test"}).status_code == 403
+    client.post(
+        "/admin/portal/claim/",
+        {"action": "delete_claims", "_selected_action": [str(accepted.pk)], "post": "yes"},
+    )
+    accepted.refresh_from_db()
+    assert accepted.state == Claim.State.RECEIVED
+    assert not Operation.objects.exists()
 
 
 def test_claim_search_finds_a_full_reference(admin_client, accepted):
