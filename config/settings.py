@@ -171,11 +171,11 @@ TRUSTED_PROXY_CIDRS = list(filter(None, os.getenv("TRUSTED_PROXY_CIDRS", "").spl
 MIN_FREE_STORAGE_BYTES = int(os.getenv("MIN_FREE_STORAGE_BYTES", "1000000000"))
 JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "240"))
 JOB_LEASE_SECONDS = JOB_TIMEOUT_SECONDS + 120
-CONTENT_PURGE_ENABLED = os.getenv("CONTENT_PURGE_ENABLED", "0") == "1"
 # After delivery the PDF is deleted after PDF_RETENTION_DAYS; all other claim content
-# CONTENT_RETENTION_DAYS after submission. The privacy notice states both periods.
-PDF_RETENTION_DAYS = int(os.getenv("PDF_RETENTION_DAYS", "7"))
-CONTENT_RETENTION_DAYS = int(os.getenv("CONTENT_RETENTION_DAYS", "30"))
+# CONTENT_RETENTION_DAYS after submission. The privacy notice states both periods, so
+# they are fixed here rather than read from the environment.
+PDF_RETENTION_DAYS = 7
+CONTENT_RETENTION_DAYS = 90
 UPLOAD_SCANNER = os.getenv("UPLOAD_SCANNER", "disabled" if DEBUG else "clamav")
 CLAMAV_HOST = os.getenv("CLAMAV_HOST", "scanner")
 CLAMAV_PORT = int(os.getenv("CLAMAV_PORT", "3310"))

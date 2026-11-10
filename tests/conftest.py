@@ -54,7 +54,6 @@ def local_settings(settings, tmp_path):
     settings.STATIC_ROOT.mkdir()
     settings.UPLOAD_SCANNER = "disabled"
     settings.MAIL_DELIVERY_MODE = "local"
-    settings.CONTENT_PURGE_ENABLED = True
     settings.MIN_FREE_STORAGE_BYTES = 0
     settings.APPROVED_DELIVERY_RECIPIENTS = ["finance@example.invalid"]
     settings.TEST_RECIPIENT_ALLOWLIST = []

@@ -39,7 +39,6 @@ call_command("verify_storage", stdout=before)
 count = Claim.objects.count()
 if not count:
     raise SystemExit("The restored dataset is empty")
-settings.CONTENT_PURGE_ENABLED = True
 Claim.objects.update(retention_due=timezone.now())
 result = cleanup(execute=True)
 if result["failures"] or Claim.objects.exclude(state="purged").exists():

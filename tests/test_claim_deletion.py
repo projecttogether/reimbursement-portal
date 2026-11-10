@@ -14,9 +14,7 @@ def stored_files(claim):
     return [path_for(upload.source_key) for upload in claim.uploads.all()]
 
 
-def test_operator_deletion_purges_now_and_is_audited(accepted, settings):
-    # Deletion is an explicit operator decision, independent of automatic retention.
-    settings.CONTENT_PURGE_ENABLED = False
+def test_operator_deletion_purges_now_and_is_audited(accepted):
     files = stored_files(accepted)
     assert files and all(path.exists() for path in files)
     assert Job.objects.filter(state="pending").exists()
@@ -62,8 +60,7 @@ def test_a_deleted_claim_cannot_be_deleted_again(accepted):
     assert Operation.objects.count() == 1
 
 
-def test_interrupted_deletion_is_finished_by_cleanup(accepted, settings):
-    settings.CONTENT_PURGE_ENABLED = False
+def test_interrupted_deletion_is_finished_by_cleanup(accepted):
     directory = path_for(accepted.uploads.first().source_key).parent
     directory.chmod(0o500)
     try:

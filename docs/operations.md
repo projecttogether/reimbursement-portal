@@ -114,14 +114,11 @@ tracking, as the provider adapter requests.
 A locally accepted claim is not a payment approval. API acceptance is not email
 delivery, and recipient-server delivery is not proof of completed Moss processing.
 The merged PDF is the authoritative document in the established Finance workflow.
-Finance must accept the selected handoff/deletion policy before setting
-`CONTENT_PURGE_ENABLED=1`. It defaults to `0`; abandoned uploads and orphan
-temporary files are still cleaned. `PDF_RETENTION_DAYS` (7) and
-`CONTENT_RETENTION_DAYS` (30) are the periods the privacy notice states; change
-both together with the notice. An already started purge always resumes. While a
-production deployment runs with purge disabled, claims outlive those periods: the
-admin area warns template admins, and `migrate` and the worker report check
-`portal.W001` at startup.
+Content purge is always on; no environment variable turns it off or changes its
+periods. `PDF_RETENTION_DAYS` (7) and `CONTENT_RETENTION_DAYS` (90) in
+`config/settings.py` are the periods the privacy notice states; change them only
+together with the notice, the summary on the form page and a migration that
+publishes the updated notice. An already started purge always resumes.
 
 Run a complete dummy claim through the approved MailerSend/Moss route before
 launch. Check all pages, KST/KTR, declaration, signature, amounts, and compressed
@@ -141,8 +138,8 @@ Template admins can also delete claims, for example test submissions: **Löschen
 a claim, or the list action **Ausgewählte Anträge löschen** for up to 100 at once.
 A confirmation page lists the claims and says whether Finance may already hold their
 PDF; deletion needs a reason and records it with their address. It purges the claim
-immediately, also while `CONTENT_PURGE_ENABLED=0`: files, personal and banking data
-are removed, and pending processing or sending stops. A claim that is currently being
+immediately: files, personal and banking data are removed, and pending processing or
+sending stops. A claim that is currently being
 rendered or sent cannot be deleted until that finishes. A copy already sent to Finance
 or Moss is not affected. As after a retention purge, the reference UUID, form, status
 and the logged action stay visible for 30 days. Each deletion also logs
@@ -205,7 +202,7 @@ investigate failures without putting financial content in logs.
 
 The worker reclaims expired leases and runs cleanup each minute, including deletion
 of expired Django sessions through the configured session backend. Active sessions
-are preserved; session cleanup runs even when claim content purge is disabled.
+are preserved.
 Reservations older than a job lease are reclaimed when their execution lock is free, including after
 a restart clears tmpfs. Both supervisor and parser hold the lock, so a stale job
 cannot cause cleanup to remove a live parser's workspace. An interrupted
@@ -230,8 +227,8 @@ suppress its own alert. `claim_status` emits redacted operational state for this
 Name the technical owner and Finance contact before launch.
 
 Drafts expire after 24 hours. After recipient-server delivery, the PDF and local
-email copies are deleted after seven days; all other content of the claim 30 days
-after submission. Failed/ambiguous claims have a 30-day resolution target and
+email copies are deleted after seven days; all other content of the claim 90 days
+after submission. Failed/ambiguous claims have a 90-day resolution target and
 remain retained if unresolved; the admin area marks overdue claims and logs report
 approaching ones. The owner must resolve them or record an approved extension.
 After content purge, minimal reference/time/status records expire after 30 days.

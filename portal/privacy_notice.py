@@ -29,7 +29,7 @@ Dabei setzen wir Dienstleister ein, die deine Daten nur nach unseren Weisungen v
 
 # Speicherdauer im Portal
 
-Nicht abgeschickte Formulare und ihre Dateien löschen wir nach 24 Stunden. Nach dem Einreichen löschen wir die erstellte PDF 7 Tage nach der Zustellung an Finance. Alle übrigen Angaben, Belege und deine Unterschrift löschen wir 30 Tage nach dem Einreichen. Gibt es Probleme bei der Zustellung, bewahren wir den Antrag auf, bis sie geklärt sind. Danach behalten wir für weitere 30 Tage nur die Referenz, den Zeitpunkt und den Bearbeitungsstatus.
+Nicht abgeschickte Formulare und ihre Dateien löschen wir nach 24 Stunden. Nach dem Einreichen löschen wir die erstellte PDF 7 Tage nach der Zustellung an Finance. Alle übrigen Angaben, Belege und deine Unterschrift löschen wir 90 Tage nach dem Einreichen. Gibt es Probleme bei der Zustellung, bewahren wir den Antrag auf, bis sie geklärt sind. Danach behalten wir für weitere 30 Tage nur die Referenz, den Zeitpunkt und den Bearbeitungsstatus.
 
 Die an Finance übermittelten Unterlagen werden dort nach den gesetzlichen Aufbewahrungsfristen gespeichert, in der Regel bis zu zehn Jahre.
 

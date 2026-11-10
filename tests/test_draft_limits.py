@@ -15,8 +15,7 @@ pytestmark = pytest.mark.django_db
 
 
 @pytest.mark.django_db(transaction=True)
-def test_worker_removes_expired_sessions_and_preserves_active_sessions(settings):
-    settings.CONTENT_PURGE_ENABLED = False
+def test_worker_removes_expired_sessions_and_preserves_active_sessions():
     expired, active = SessionStore(), SessionStore()
     for session in (expired, active):
         session["marker"] = "synthetic"

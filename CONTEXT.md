@@ -59,7 +59,7 @@ request; `RequestParticipant` adapts a request.
 **Claim**: the immutable record created when a draft is accepted. Its states are
 `received → rendering → ready`, or `processing_failed`, then `purging → purged`.
 After delivery its PDF is removed at `pdf_due` (7 days) and all content at
-`retention_due` (30 days after submission) (`services/retention.py`). A template admin
+`retention_due` (90 days after submission) (`services/retention.py`). A template admin
 can delete a claim earlier: an operator action that purges it at once.
 
 **Expense**: one row of a claim, in EUR. A *receipt* row has merchant, purpose,
