@@ -68,12 +68,6 @@ class PortalAdminSite(admin.AdminSite):
             context["nav_sections"] = admin_navigation.sections(request)
             context["settings_tabs"] = admin_navigation.settings_tabs(request)
             context["account_url"] = settings.KEYCLOAK_ACCOUNT_URL
-            # Template admins maintain the privacy notice and its retention promise.
-            if is_template_admin(request.user) and retention.purge_disabled_in_production():
-                context["purge_disabled"] = {
-                    "pdf_days": settings.PDF_RETENTION_DAYS,
-                    "content_days": settings.CONTENT_RETENTION_DAYS,
-                }
         return context
 
     def index(self, request, extra_context=None):

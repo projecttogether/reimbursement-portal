@@ -203,17 +203,12 @@ def test_liveness_is_independent_of_database(client):
         assert client.get("/-/readyz").status_code == 503
 
 
-def test_content_deletion_waits_for_configured_handoff_policy(accepted, settings):
-    settings.CONTENT_PURGE_ENABLED = False
+def test_content_is_deleted_once_due_without_any_setting(accepted):
     accepted.retention_due = timezone.now() - timedelta(seconds=1)
     accepted.save()
     cleanup(execute=True)
     accepted.refresh_from_db()
-    assert accepted.state != "purged" and accepted.iban
-    settings.CONTENT_PURGE_ENABLED = True
-    cleanup(execute=True)
-    accepted.refresh_from_db()
-    assert accepted.state == "purged"
+    assert accepted.state == "purged" and not accepted.iban
 
 
 def test_purged_claim_does_not_match_an_anonymous_session(accepted):

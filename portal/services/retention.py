@@ -30,11 +30,6 @@ class ClaimBusy(Exception):
     """A job or execution workspace still uses the claim; purge later."""
 
 
-def purge_disabled_in_production():
-    """Production keeps claims past the periods the privacy notice states until purge is on."""
-    return settings.DEPLOYMENT_ENV == "production" and not settings.CONTENT_PURGE_ENABLED
-
-
 def begin_purge(claim):
     """Mark a claim the caller has locked as purging and cancel its jobs.
 
@@ -163,18 +158,13 @@ def cleanup(*, execute=False):
     # Session expiry denies access but does not remove stored tokens or metadata.
     import_module(settings.SESSION_ENGINE).SessionStore.clear_expired()
     DraftAdmission.objects.filter(window_start__lt=now - timedelta(days=2)).delete()
-    for claim_id in pdfs if settings.CONTENT_PURGE_ENABLED else []:
+    for claim_id in pdfs:
         try:
             remove_pdf(claim_id)
         except (OSError, ClaimBusy):
             result["failures"] += 1
             logger.error("pdf_removal_failed reference=%s", claim_id)
     for claim_id in due:
-        if (
-            not settings.CONTENT_PURGE_ENABLED
-            and not Claim.objects.filter(pk=claim_id, state=Claim.State.PURGING).exists()
-        ):
-            continue
         try:
             purge_claim(claim_id)
         except (OSError, ClaimBusy):

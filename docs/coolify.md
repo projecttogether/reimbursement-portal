@@ -118,8 +118,10 @@ tracking.
 Back up PostgreSQL and the private files together, encrypted and off-host. A Docker
 volume provides neither encryption nor a backup. Schedule
 `python manage.py reconcile_deliveries --batch-size 100` every 15 minutes in the
-worker container. Enable `CONTENT_PURGE_ENABLED` once Finance has accepted the
-handoff; the privacy notice states the 7-day PDF and 30-day content periods.
+worker container. Content purge is always on: the PDF is deleted 7 days after
+delivery and all other claim content 90 days after submission, as the privacy
+notice states. Remove `CONTENT_PURGE_ENABLED`, `PDF_RETENTION_DAYS` and
+`CONTENT_RETENTION_DAYS` from older Coolify environments; the portal ignores them.
 
 Form, template and privacy notice changes take effect immediately. Open drafts of
 affected forms must reload and be reviewed again; accepted claims keep their

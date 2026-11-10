@@ -101,7 +101,6 @@
     <div id="content" class="flex flex-col gap-6 rounded-xl border bg-card p-6 text-card-foreground shadow-sm">
 {% endif %}
         {% block messages %}{% include "admin/portal/messages.html" %}{% endblock messages %}
-        {% if purge_disabled %}{% component "alert" variant="warning" %}{% icon "triangle-alert" %}{% component "alert_title" %}Automatisches Löschen ist ausgeschaltet{% endcomponent %}{% component "alert_description" %}Anträge bleiben länger gespeichert, als der Datenschutzhinweis angibt: die PDF {{ purge_disabled.pdf_days }} Tage nach der Zustellung, alle übrigen Inhalte {{ purge_disabled.content_days }} Tage nach dem Einreichen. Setze CONTENT_PURGE_ENABLED=1, sobald Finance die Übergabe bestätigt hat.{% endcomponent %}{% endcomponent %}{% endif %}
         {% if settings_tabs %}{% include "admin/portal/settings_tabs.html" %}{% endif %}
         {% block pretitle %}{% endblock %}
         {% block content_title %}{% if title %}<h1 class="page-title">{{ title }}</h1>{% endif %}{% endblock %}
