@@ -33,8 +33,15 @@ LOCAL_HOSTS = {
     "postgres",
     "REPLACE_WITH_DATABASE_HOST",
 }
-# Binary files someone has looked at: ProjectTogether's logo.
-REVIEWED_BINARIES = {"portal/static/portal/brand/projecttogether-logo.png"}
+# Binary files someone has looked at: ProjectTogether's logo, and the README's
+# screenshots (synthetic data only).
+REVIEWED_BINARIES = {
+    "portal/static/portal/brand/projecttogether-logo.png",
+    "docs/screenshots/admin-claim-dark.png",
+    "docs/screenshots/admin-claims.png",
+    "docs/screenshots/participant-form-phone.png",
+    "docs/screenshots/participant-form.png",
+}
 PRIVATE_SUFFIXES = {".db", ".sqlite3", ".dump", ".eml", ".pem", ".key", ".log", ".tar", ".zip"}
 TOKEN = re.compile(
     r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----|"
