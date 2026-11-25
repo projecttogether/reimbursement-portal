@@ -1,17 +1,11 @@
 "use strict";
 (() => {
   const target = document.getElementById("processing-status");
-  // Participants see three outcomes; the detailed states stay internal.
-  const processing = "Dein Antrag wird verarbeitet und an Finance übermittelt.";
-  const problem =
-    "Bei der Verarbeitung ist ein Problem aufgetreten. Dein Antrag bleibt gespeichert; bitte reiche ihn nicht erneut ein, sondern melde dich mit deiner Referenz.";
-  const messages = {
-    delivered: "Dein Antrag wurde an Finance übermittelt.",
-    delivery_failed: problem,
-    processing_failed: problem,
-  };
+  const text = JSON.parse(document.getElementById("status-text").textContent);
+  // The server reports one of three outcomes: processing, problem or delivered.
+  const messages = { delivered: text.delivered, problem: text.problem };
   function show(state) {
-    target.textContent = messages[state] || processing;
+    target.textContent = messages[state] || text.processing;
   }
   show(target.dataset.status);
   let polls = 0;
@@ -28,8 +22,7 @@
       show(result.state);
       if (result.final) return;
     } catch {
-      target.textContent =
-        "Der Status ist gerade nicht erreichbar. Dein Antrag bleibt gespeichert; bitte reiche ihn nicht erneut ein.";
+      target.textContent = text.unavailable;
     } finally {
       clearTimeout(deadline);
     }
@@ -39,8 +32,7 @@
         : Math.min(30000, 5000 * 1.1 ** polls);
       setTimeout(refresh, delay + Math.random() * 1000);
     } else {
-      target.textContent +=
-        " Lade diese Seite später neu, um den aktuellen Status zu prüfen.";
+      target.textContent += ` ${text.reload}`;
     }
   }
   if (target.dataset.final !== "true") setTimeout(refresh, 3000);

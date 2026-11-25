@@ -1,27 +1,36 @@
 import json
-import secrets
 from functools import wraps
 
 from django.conf import settings
 from django.db import connection
-from django.http import Http404, JsonResponse
+from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.crypto import constant_time_compare
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from portal import intake
+from portal import app_settings, dates, intake, numbers, theme
 from portal.constants import PAYMENT_TIMING
 from portal.forms import ClaimForm
+from portal.i18n import t
 from portal.intake import IntakeError
-from portal.models import Claim, Form, PrivacyNotice
+from portal.models import Claim, EmailSettings, Form, PrivacyNotice
 from portal.participants import RequestParticipant
 from portal.roles import manages
-from portal.services import claim_validation, delivery, drafts, uploads
+from portal.services import (
+    claim_status,
+    claim_validation,
+    confirmations,
+    drafts,
+    evidence,
+    terms,
+    uploads,
+)
 from portal.services.capacity import storage_available
 from portal.services.drafts import open_draft
-from portal.services.mailersend import verify_webhook
+from portal.services.mailersend import verify_webhook, webhook_evidence
 from portal.services.readiness import dependencies
 from portal.services.storage import check_writable
 from portal.services.submissions import submit_claim
@@ -34,16 +43,25 @@ def api_errors(view):
             return view(request, *args, **kwargs)
         except IntakeError as exc:
             return JsonResponse({"error": exc.message, "fields": exc.errors}, status=exc.status)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return JsonResponse({"error": "Ungültige Anfrage."}, status=400)
+        except (json.JSONDecodeError, UnicodeError, RecursionError):
+            # Not JSON, text that is not Unicode (a lone surrogate), or nested too deeply.
+            return JsonResponse({"error": t("Invalid request.")}, status=400)
 
     return wrapped
+
+
+def claim_json(request):
+    """The request's JSON. An integer with too many digits is a ValueError of its own."""
+    try:
+        return json.loads(request.body)
+    except ValueError as exc:
+        raise IntakeError(t("Invalid request.")) from exc
 
 
 @require_GET
 def index(request):
     primary = Form.objects.select_related("template").filter(primary=True).first()
-    if primary and primary.is_open():
+    if primary and terms.accepting(primary):
         return redirect("form_page", form_slug=primary.slug)
     return render(request, "portal/index.html")
 
@@ -58,9 +76,12 @@ def privacy(request):
 def form_page(request, form_slug):
     form = get_object_or_404(Form.objects.select_related("template"), slug=form_slug)
     # Owners can look at a form before it opens; nothing can be uploaded or submitted.
-    preview = not form.is_open() and manages(request.user, form)
-    if not form.is_open() and not preview:
-        return render(request, "portal/closed.html", {"form": form}, status=403)
+    is_open = form.is_open()
+    preview = not is_open and manages(request.user, form)
+    if not is_open and not preview:
+        # Draft and archived form names are private even when the link is known.
+        context = {"form": form} if form.status == Form.Status.PUBLISHED else {}
+        return render(request, "portal/closed.html", context, status=403)
     draft, token = None, ""
     if not preview:
         try:
@@ -72,24 +93,21 @@ def form_page(request, form_slug):
                 {"form": form, "message": exc.message},
                 status=exc.status,
             )
-    template = form.template
-    notice = PrivacyNotice.current()
+    offered = terms.of(form)
     claim_form = ClaimForm(
-        form=form, initial={"trip_start": form.trip_start, "trip_end": form.trip_end}
+        terms=offered, initial={"trip_start": form.trip_start, "trip_end": form.trip_end}
     )
     configuration = {
         "draft_id": str(draft.id) if draft else "",
         "token": token,
         "preview": preview,
-        "travel": template.travel,
-        "mileage_rate": str(template.mileage_rate) if template.mileage_enabled else None,
-        "purpose_options": bool(form.purpose_choices()),
-        "fixed_purpose": claim_form.fixed_purpose,
+        **offered.script_configuration(),
         "trip_start": form.trip_start.isoformat() if form.trip_start else "",
         "trip_end": form.trip_end.isoformat() if form.trip_end else "",
         "upload_url": reverse("upload", kwargs={"form_slug": form.slug}),
         "submit_url": reverse("submit", kwargs={"form_slug": form.slug}),
         "validate_url": reverse("validate_claim", kwargs={"form_slug": form.slug}),
+        "date_format": dates.active().script,
         **intake.client_config(),
     }
     return render(
@@ -97,16 +115,18 @@ def form_page(request, form_slug):
         "portal/form.html",
         {
             "form": form,
-            "template": template,
+            "template": form.template,
+            "terms": offered,
             "claim_form": claim_form,
-            "privacy_notice": notice,
             "configuration": configuration,
             "intake_messages": intake.messages(),
             "amount_pattern": intake.AMOUNT_PATTERN,
+            "amount_placeholder": numbers.active().example("0.00"),
             "field_lengths": intake.EXPENSE_FIELD_LENGTHS,
             "max_distance_km": intake.MAX_DISTANCE_KM,
             "development": settings.DEBUG,
             "preview": preview,
+            "confirmation": confirmations.enabled(),
         },
     )
 
@@ -166,25 +186,25 @@ def upload_remove(request, form_slug, upload_id):
 @api_errors
 def validate_claim(request, form_slug):
     """Validate current entries without saving them or requiring a signature."""
-    data = json.loads(request.body)
+    data = claim_json(request)
+    # Submitting refuses text that is not Unicode (a lone surrogate); so does the review.
+    json.dumps(data, ensure_ascii=False).encode()
     if not isinstance(data, dict):
-        raise IntakeError("Ungültige Anfrage.")
-    draft, form = drafts.gate(
+        raise IntakeError(t("Invalid request."))
+    _draft, form = drafts.gate(
         RequestParticipant(request),
         form_slug,
         data.get("draft_id"),
         draft_token(request),
-        drafts.Action(edits=False, accepts=True, locks_form=False),
+        drafts.REVIEW,
     )
-    if draft.claim_id:
-        raise drafts.AlreadySubmitted(draft)
-    return JsonResponse({"fields": claim_validation.review(data, form).errors})
+    return JsonResponse({"fields": claim_validation.review(data, terms.of(form)).errors})
 
 
 @require_POST
 @api_errors
 def submit(request, form_slug):
-    data = json.loads(request.body)
+    data = claim_json(request)
     claim = submit_claim(RequestParticipant(request), form_slug, data)
     return JsonResponse(
         {
@@ -198,11 +218,12 @@ def submit(request, form_slug):
 @require_GET
 def received(request, claim_id):
     claim = get_object_or_404(
-        Claim.objects.select_related("form"),
+        claim_status.annotate(Claim.objects.select_related("form", "delivery")),
         pk=claim_id,
         accepted_draft__session_hash=RequestParticipant(request).binding(),
     )
-    status, final = delivery.participant_status(claim)
+    current = claim_status.of(claim)
+    status, final = current.outcome, current.final
     if request.GET.get("format") == "json":
         return JsonResponse({"reference": claim.reference, "state": status, "final": final})
     return render(
@@ -213,9 +234,57 @@ def received(request, claim_id):
             "status": status,
             "final": final,
             "form": claim.form,
-            "payment_timing": PAYMENT_TIMING,
+            "payment_timing": t(PAYMENT_TIMING),
+            "status_text": {
+                "processing": t("Your claim is being processed and sent to Finance."),
+                "problem": t(
+                    "There was a problem processing your claim. It stays saved; please do not "
+                    "submit it again, but contact us with your reference."
+                ),
+                "delivered": t("Your claim was sent to Finance."),
+                "unavailable": t(
+                    "The status is unavailable right now. Your claim stays saved; please do "
+                    "not submit it again."
+                ),
+                "reload": t("Reload this page later to check the current status."),
+            },
         },
     )
+
+
+def _named_by_digest(response, digest, current):
+    """Cache `response` for good when its link names the current `digest`."""
+    if digest == current:
+        response["Cache-Control"] = "public, max-age=31536000, immutable"
+    else:
+        response["Cache-Control"] = "public, no-cache"
+    return response
+
+
+@require_GET
+def favicon(request, digest):
+    """The favicon from the Appearance settings. Its link names the digest of its content."""
+    general = app_settings.current(request)
+    if not general.favicon_digest:
+        raise Http404
+    response = HttpResponse(bytes(general.favicon), content_type=general.favicon_type)
+    # An SVG favicon opened on its own must not run anything.
+    response["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+    return _named_by_digest(response, digest, general.favicon_digest)
+
+
+@require_GET
+def theme_stylesheet(request, digest):
+    """The accent color from the Appearance settings, as a stylesheet over ui.css.
+
+    The content security policy allows no inline styles, so the color comes as a file.
+    Its link names the digest of its content.
+    """
+    color = app_settings.current(request).accent_color
+    if not color:
+        raise Http404
+    response = HttpResponse(theme.stylesheet(color), content_type="text/css; charset=utf-8")
+    return _named_by_digest(response, digest, theme.digest(color))
 
 
 @csrf_exempt
@@ -230,7 +299,10 @@ def mailersend_webhook(request):
         if not verify_webhook(raw, request.headers.get("Signature", ""), test=test):
             return JsonResponse({"error": "invalid_signature"}, status=401)
         if not test:
-            delivery.ingest_event(data)
+            # Admin > Email shows it: the webhook and its signing secret work.
+            EmailSettings.note_webhook()
+        if not test and (provided := webhook_evidence(data)):
+            evidence.record(provided)
     except (ValueError, TypeError, AttributeError, KeyError):
         return JsonResponse({"error": "invalid_event"}, status=400)
     return JsonResponse({"received": True})
@@ -239,7 +311,8 @@ def mailersend_webhook(request):
 def health_authorized(request):
     return settings.DEBUG or bool(
         settings.HEALTHCHECK_TOKEN
-        and secrets.compare_digest(
+        # Django compares bytes even if the request header contains non-ASCII text.
+        and constant_time_compare(
             request.headers.get("X-Health-Token", ""), settings.HEALTHCHECK_TOKEN
         )
     )
@@ -249,7 +322,13 @@ def health_authorized(request):
 def healthz(request):
     if not health_authorized(request):
         raise Http404
-    return JsonResponse({"status": "OK", "timestamp": timezone.now().isoformat()})
+    return JsonResponse(
+        {
+            "status": "OK",
+            "version": settings.APP_VERSION or None,
+            "timestamp": timezone.now().isoformat(),
+        }
+    )
 
 
 @require_GET

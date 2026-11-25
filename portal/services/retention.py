@@ -1,3 +1,12 @@
+"""Retention: when a claim's PDF and content are deleted, and deleting them.
+
+A claim is resolved once Finance has its PDF. The PDF then goes after PDF_RETENTION_DAYS,
+everything else CONTENT_RETENTION_DAYS after submission, never before the PDF. An
+unresolved claim keeps everything until an operator resolves, archives or deletes it.
+Archiving needs no resolution: an archived claim that is not resolved goes on its
+resolution date, CONTENT_RETENTION_DAYS after submission.
+"""
+
 import logging
 from datetime import timedelta
 from importlib import import_module
@@ -10,24 +19,75 @@ from django.utils import timezone
 from portal.models import (
     Claim,
     Confirmation,
-    DeliveryEvent,
+    DeliveryAttempt,
     Draft,
     DraftAdmission,
     Upload,
     WorkspaceReservation,
 )
-from portal.services import queue, uploads
+from portal.services import outbound, queue, uploads
 from portal.services.capacity import recover_abandoned_workspaces
-from portal.services.storage import outbox_key, remove_keys, sweep_orphans
+from portal.services.storage import remove_keys, sweep_orphans
+from portal.services.transport import DELIVERED, FAILED, UNKNOWN
 
 logger = logging.getLogger(__name__)
 
-# How long the minimal reference/status record of a purged claim remains.
-PURGED_RECORD_DAYS = 30
+
+def resolution_due(submitted_at):
+    """When an unresolved claim becomes overdue for an operator."""
+    return submitted_at + timedelta(days=settings.CONTENT_RETENTION_DAYS)
+
+
+def _content_due_by(now):
+    """Claims whose content is due for deletion at `now`; see `content_due`."""
+    return Q(retention_due__lte=now) | Q(
+        archived_at__isnull=False, retention_due__isnull=True, resolution_due__lte=now
+    )
+
+
+def content_due(claim):
+    """When the claim's remaining content is deleted, or None while it awaits resolution."""
+    if claim.retention_due is None and claim.archived_at is not None:
+        return claim.resolution_due
+    return claim.retention_due
+
+
+def follow_delivery(claim, state, delivered_at):
+    """Set the deletion dates of a claim the caller locked from its Finance delivery's state.
+
+    A delivered claim is resolved. A failed or unclear delivery holds everything until an
+    operator resolves or archives it. Any other state changes nothing.
+    """
+    if state == DELIVERED:
+        claim.pdf_due = delivered_at + timedelta(days=settings.PDF_RETENTION_DAYS)
+        claim.retention_due = max(
+            claim.submitted_at + timedelta(days=settings.CONTENT_RETENTION_DAYS), claim.pdf_due
+        )
+    elif state in {FAILED, UNKNOWN}:
+        claim.pdf_due = claim.retention_due = None
+    else:
+        return
+    claim.save(update_fields=["pdf_due", "retention_due"])
 
 
 class ClaimBusy(Exception):
     """A job or execution workspace still uses the claim; purge later."""
+
+
+def _in_use(claim):
+    return (
+        queue.claim_has_running_job(claim)
+        or WorkspaceReservation.objects.filter(Q(claim=claim) | Q(upload__claim=claim)).exists()
+    )
+
+
+def _finance_emails(claim):
+    """The claim's emails to Finance: they carry its PDF."""
+    return DeliveryAttempt.objects.filter(delivery__claim=claim)
+
+
+def _emails(claim):
+    return [*_finance_emails(claim), *Confirmation.objects.filter(claim=claim)]
 
 
 def begin_purge(claim):
@@ -36,10 +96,7 @@ def begin_purge(claim):
     Raises ClaimBusy while a job or execution workspace still uses it. Once marked, the
     worker's cleanup finishes the purge even if the caller is interrupted.
     """
-    if (
-        queue.claim_has_running_job(claim)
-        or WorkspaceReservation.objects.filter(Q(claim=claim) | Q(upload__claim=claim)).exists()
-    ):
+    if _in_use(claim):
         raise ClaimBusy
     claim.state = Claim.State.PURGING
     claim.save(update_fields=["state"])
@@ -47,73 +104,47 @@ def begin_purge(claim):
 
 
 def purge_claim(claim_id):
+    """Delete a claim with its files and every record that belongs to it.
+
+    Nothing of the claim remains in the database. Only operator actions stay in the
+    log, without a link to the claim.
+    """
     with transaction.atomic():
-        claim = Claim.objects.select_for_update().get(pk=claim_id)
-        if claim.state == Claim.State.PURGED:
+        claim = Claim.objects.select_for_update().filter(pk=claim_id).first()
+        if claim is None:
             return
         begin_purge(claim)
     # Leave the manifest intact until every deletion succeeds, so a crash resumes safely.
     for upload in claim.uploads.all():
         uploads.remove_files(upload)
     remove_keys(claim.pdf_key)
-    confirmation = getattr(claim, "confirmation", None)
-    if confirmation:
-        remove_keys(outbox_key(confirmation.pk))
-    delivery = getattr(claim, "delivery", None)
-    if delivery:
-        for attempt in delivery.attempts.all():
-            remove_keys(outbox_key(attempt.id))
     with transaction.atomic():
-        claim = Claim.objects.select_for_update().get(pk=claim_id)
-        Confirmation.objects.filter(claim=claim).delete()
-        if delivery:
-            DeliveryEvent.objects.filter(attempt__delivery=delivery).delete()
-            delivery.attempts.all().delete()
-            delivery.recipient = delivery.message_id = delivery.error_code = ""
-            delivery.save()
-        claim.uploads.all().delete()
-        claim.expenses.all().delete()
-        for field in [
-            "full_name",
-            "email",
-            "street",
-            "postal_code",
-            "city",
-            "country",
-            "account_holder",
-            "iban",
-            "bic",
-            "purpose",
-            "purpose_details",
-            "trip_destination",
-            "pdf_key",
-            "pdf_hash",
-            "error_code",
-        ]:
-            setattr(claim, field, "")
-        claim.snapshot, claim.total = {}, None
-        claim.bookkeeping_reference = None
-        claim.trip_start = claim.trip_end = None
-        claim.pdf_size = claim.pdf_page_count = 0
-        claim.state, claim.purged_at = Claim.State.PURGED, timezone.now()
-        claim.save()
-        Draft.objects.filter(claim=claim).update(session_hash="", token_hash="", payload_hash="")
+        claim = Claim.objects.select_for_update().filter(pk=claim_id).first()
+        if claim is None:
+            return
+        if _in_use(claim):
+            raise ClaimBusy
+        # Evidence names emails, not the claim; the claim's other records cascade.
+        outbound.forget(*_emails(claim))
+        # Released and expired, the accepted draft goes with the next cleanup, together
+        # with any uploads it kept; it no longer counts as an active draft.
+        Draft.objects.filter(claim=claim).update(
+            session_hash="", token_hash="", payload_hash="", expires_at=timezone.now()
+        )
+        claim.delete()
 
 
 def remove_pdf(claim_id):
     """Delete a delivered claim's PDF and local email copies; the content stays."""
     with transaction.atomic():
         # The row lock keeps operator retries out until the PDF is gone.
-        claim = Claim.objects.select_for_update().get(pk=claim_id)
-        if not claim.pdf_key or claim.state in {Claim.State.PURGING, Claim.State.PURGED}:
+        claim = Claim.objects.select_for_update().filter(pk=claim_id).first()
+        if claim is None or not claim.pdf_key or claim.state == Claim.State.PURGING:
             return
         if queue.claim_has_active_job(claim):
             raise ClaimBusy
         remove_keys(claim.pdf_key)
-        delivery = getattr(claim, "delivery", None)
-        if delivery:
-            for attempt in delivery.attempts.all():
-                remove_keys(outbox_key(attempt.id))
+        outbound.remove_copies(*_finance_emails(claim).values_list("pk", flat=True))
         claim.pdf_key, claim.pdf_removed_at = "", timezone.now()
         claim.save(update_fields=["pdf_key", "pdf_removed_at"])
 
@@ -123,27 +154,24 @@ def cleanup(*, execute=False):
     pdfs = list(
         Claim.objects.filter(pdf_due__lte=now)
         .exclude(pdf_key="")
-        .exclude(state__in=[Claim.State.PURGING, Claim.State.PURGED])
+        .exclude(state=Claim.State.PURGING)
         .values_list("pk", flat=True)
     )
     due = list(
-        Claim.objects.filter(retention_due__lte=now)
-        .exclude(state=Claim.State.PURGED)
-        .values_list("pk", flat=True)
-    )
-    due += list(
-        Claim.objects.filter(state=Claim.State.PURGING)
-        .exclude(pk__in=due)
-        .values_list("pk", flat=True)
+        Claim.objects.filter(_content_due_by(now) | Q(state=Claim.State.PURGING)).values_list(
+            "pk", flat=True
+        )
     )
     drafts = list(
         Draft.objects.filter(claim__isnull=True, expires_at__lt=now).values_list("pk", flat=True)
     )
     unresolved = (
         Claim.objects.filter(
-            resolution_due__lte=now + timedelta(days=3), retention_due__isnull=True
+            resolution_due__lte=now + timedelta(days=3),
+            retention_due__isnull=True,
+            archived_at__isnull=True,
         )
-        .exclude(state__in=[Claim.State.PURGED, Claim.State.PURGING])
+        .exclude(state=Claim.State.PURGING)
         .count()
     )
     result = {
@@ -175,15 +203,7 @@ def cleanup(*, execute=False):
             uploads.expire_draft(draft_id)
         except OSError:
             result["failures"] += 1
-    Draft.objects.filter(claim__state=Claim.State.PURGED, expires_at__lt=now).delete()
     result["failures"] += uploads.expire_unattached(now)
-    DeliveryEvent.objects.filter(
-        attempt__isnull=True, received_at__lt=now - timedelta(days=30)
-    ).delete()
-    # Minimal reference/status records have a bounded operational lifetime.
-    Claim.objects.filter(
-        state=Claim.State.PURGED, purged_at__lt=now - timedelta(days=PURGED_RECORD_DAYS)
-    ).delete()
     orphan_cleanup()
     return result
 

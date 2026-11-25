@@ -1,0 +1,4 @@
+# MailerSend's published secret for test webhooks (portal/services/mailersend.py), in a
+# commit and a merge commit of this repository's history; not a credential.
+703f7732f0e769017615f1bd1e702be2ca30e749:portal/services/mailersend.py:generic-api-key:120
+50023c72e71c5eb64bbd97e31137a7ec3794b399:portal/services/mailersend.py:generic-api-key:120

@@ -1,23 +1,27 @@
+# The product name, the same in every language and deployment.
+APP_NAME = "Reimbursement Portal"
+# The organization that makes the app: its logo and name on the sign-in page, in the
+# sidebar and on the About card (PT's app identity rules: the app first, PT second).
+ORGANIZATION = "ProjectTogether"
+# The app's source code: the About card and the sign-in page link to it.
+REPOSITORY_URL = "https://github.com/projecttogether/reimbursement-portal"
+# What the app is for, in one sentence: the large text of the sign-in page.
+APP_TAGLINE = "Collect expense claims with receipts and signatures, and send them to accounting."
+# Standard participant texts, in English; portal.i18n holds their German version.
 DECLARATION = (
-    "Hiermit bestätige ich, dass mir die geltend gemachten Aufwendungen tatsächlich "
-    "und notwendigerweise ausschließlich für das Geschäft und zur Erfüllung der "
-    "satzungsmäßigen Zwecke der ProjectTogether gGmbH entstanden sind."
+    "I confirm that the stated expenses were actually incurred, serve the stated purpose "
+    "and have not been reimbursed before."
 )
-DECLARATION_VERSION = "external-reimbursement-2026-03"
-FORM_SOURCE_URL = (
-    "https://docs.google.com/spreadsheets/d/12UinisICGeN8uHZcaI7SBlEylE8C_VKL/edit?gid=551372684"
-)
+DECLARATION_VERSION = "reimbursement-v1"
 MAX_IMAGE_PIXELS = 40_000_000
 MAX_NORMALIZED_FILE_BYTES = 10_000_000
 MAX_PDF_PAGES = 30
 MAX_RECEIPT_DIMENSION = 3508
-FORM_TITLE = "Deine Auslagen. Einfach eingereicht."
+FORM_TITLE = "Your expenses. Simply submitted."
 FORM_DESCRIPTION = (
-    "Beantrage hier die Erstattung von Kosten, die du für ProjectTogether privat ausgelegt hast "
-    "– zum Beispiel Fahrt- und Übernachtungskosten oder andere Auslagen wie Druckkosten. "
-    "Wir stellen deine Angaben und Belege in einer PDF für unser Finance-Team zusammen."
+    "Submit the costs you paid out of your own pocket for reimbursement. "
+    "Your details, receipts and signature are sent to accounting as a PDF."
 )
 PAYMENT_TIMING = (
-    "Wir melden uns bei Rückfragen. Die Auszahlung erfolgt in der Regel innerhalb von 14 Tagen. "
-    "In seltenen Fällen kann es bis zu 30 Tage dauern."
+    "For questions about your claim or the payment, contact the address given in the form."
 )

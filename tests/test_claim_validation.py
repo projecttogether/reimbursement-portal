@@ -5,9 +5,10 @@ from decimal import Decimal
 
 import pytest
 
+from portal.forms import ClaimForm
 from portal.intake import IntakeError
 from portal.models import Claim, Job
-from portal.services import claim_validation
+from portal.services import claim_validation, terms
 from tests.test_forms import mileage_row, post
 from tests.test_improvements import validate
 
@@ -40,14 +41,15 @@ def test_expense_errors_agree_through_both_http_paths(prepared, changes, field):
 def test_checks_collect_fields_from_multiple_rows_even_when_claim_fields_fail(prepared):
     first, second = mileage_row(route_from=""), mileage_row(return_date="")
     result = claim_validation.review(
-        {**prepared["data"], "full_name": "", "expenses": [first, second]}, prepared["form"]
+        {**prepared["data"], "full_name": "", "expenses": [first, second]},
+        terms.of(prepared["form"]),
     )
     assert set(result.errors) == {
         "full_name",
         f"expense-{first['id']}-route_from",
         f"expense-{second['id']}-return_date",
     }
-    assert result.payload is None and result.total is None
+    assert result.entries is None
     with pytest.raises(IntakeError):
         result.require_valid()
 
@@ -57,19 +59,20 @@ def test_valid_review_returns_exact_values_without_consent_or_signature_or_io(
 ):
     data = deepcopy(prepared["data"])
     data.update(
-        expenses=[mileage_row(distance_km="123", vehicle_registration="b-pt 123", amount="999")]
+        expenses=[mileage_row(distance_km="123", vehicle_registration="b-ab 123", amount="999")]
     )
     for key in ("signature", "declaration", "privacy_acknowledged"):
         data.pop(key)
-    original = deepcopy(data)
+    original, offered = deepcopy(data), terms.of(prepared["form"])
     with django_assert_num_queries(0):
-        reviewed = claim_validation.review(data, prepared["form"])
-    payload, total = reviewed.require_valid()
-    assert total == Decimal("73.80")
-    assert payload["expenses"][0]["vehicle_registration"] == "B-PT 123"
-    assert payload["trip_destination"] == "" and payload["trip_start"] is None
+        reviewed = claim_validation.review(data, offered)
+    entries = reviewed.require_valid()
+    assert entries.total == Decimal("73.80") and entries.signature is None
+    assert entries.expenses[0]["vehicle_registration"] == "B-AB 123"
+    assert entries.claim["trip_destination"] == "" and entries.claim["trip_start"] is None
+    assert not entries.claim.keys() & {"declaration", "privacy_acknowledged", "is_trip"}
     assert data == original
-    assert set(claim_validation.submission(data, prepared["form"]).errors) == {
+    assert set(claim_validation.submission(data, terms.of(prepared["form"])).errors) == {
         "signature",
         "declaration",
         "privacy_acknowledged",
@@ -84,7 +87,7 @@ def test_total_and_receipt_association_rules_agree(prepared, monkeypatch):
     # An unrelated invalid field must not suppress the total check.
     prepared["data"]["expenses"][0]["merchant"] = ""
     assert "__all__" in validate(prepared).json()["fields"]
-    prepared["data"]["expenses"][0]["merchant"] = "Test Rail"
+    prepared["data"]["expenses"][0]["merchant"] = "Belegverkauf"
     monkeypatch.setattr(claim_validation, "MAX_CLAIM_TOTAL", Decimal("100"))
     first = prepared["data"]["expenses"][0]
     second = {**first, "id": mileage_row()["id"]}
@@ -108,3 +111,44 @@ def test_reordered_rows_keep_their_error_identity(prepared):
     errors = validate(prepared).json()["fields"]
     prepared["data"]["expenses"].reverse()
     assert validate(prepared).json()["fields"] == errors
+
+
+def test_every_stored_claim_form_field_is_a_claim_column(form):
+    columns = {field.name for field in Claim._meta.concrete_fields}
+    stored = set(ClaimForm(terms=terms.of(form)).fields) - claim_validation.NOT_STORED
+    assert stored <= columns, stored - columns
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        # Values a form field cannot read as text.
+        {"trip_start": 5, "trip_end": ["2026-10-21"]},
+        {"trip_start": True},
+        # A lone surrogate is not Unicode text.
+        {"full_name": "Alex \ud800 Beispiel"},
+    ],
+)
+def test_json_values_that_are_not_text_are_refused_not_crashed_on(prepared, changes):
+    prepared["data"].update(changes)
+    reviewed = validate(prepared)
+    assert reviewed.status_code == 400 or reviewed.json()["fields"]
+    assert post(prepared).status_code == 400
+    assert not Claim.objects.exists()
+
+
+@pytest.mark.parametrize("body", ["[" * 100_000, '{"full_name": ' + "1" * 5000 + "}"])
+def test_json_python_cannot_load_is_an_invalid_request(prepared, body):
+    """Nested too deeply, or an integer beyond the digits Python converts."""
+    for path in ("validate", "submit"):
+        response = prepared["client"].post(
+            f"/f/test/{path}/", data=body, content_type="application/json"
+        )
+        assert response.status_code == 400
+
+
+def test_expense_text_with_a_nul_character_is_refused(prepared):
+    row = prepared["data"]["expenses"][0]
+    row["merchant"] = "Beleg\x00verkauf"
+    assert f"expense-{row['id']}-merchant" in validate(prepared).json()["fields"]
+    assert post(prepared).status_code == 400

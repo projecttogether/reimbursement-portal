@@ -1,22 +1,30 @@
 import json
+import re
 import time
 import uuid
+from datetime import timedelta
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import SuspiciousOperation
-from django.test import RequestFactory
+from django.db import connection
+from django.test import Client, RequestFactory
+from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 from mozilla_django_oidc.auth import OIDCAuthenticationBackend
 
 from portal import roles
 from portal.auth import KeycloakBackend, keycloak_logout_url
-from portal.models import Claim, DeliveryAttempt, Form, Job, Operation, PrivacyNotice
+from portal.models import Claim, Delivery, DeliveryAttempt, Form, Job, Operation, PrivacyNotice
+from portal.services import claim_status
+from portal.services.retention import cleanup
+from portal.services.storage import path_for
 
 pytestmark = pytest.mark.django_db
 
-ADMIN_GROUP = "/projecttogether/tools/reimbursement-portal-admins"
-EDITOR_GROUP = "/projecttogether/tools/reimbursement-portal"
+ADMIN_GROUP = "/reimbursements/admins"
+EDITOR_GROUP = "/reimbursements/editors"
 
 
 @pytest.fixture
@@ -51,7 +59,7 @@ def editor(db):
 def claims(oidc, **changes):
     return {
         "sub": "subject-1",
-        "email": "person@projecttogether.org",
+        "email": "person@example.invalid",
         "email_verified": True,
         "given_name": "Kim",
         "family_name": "Muster",
@@ -74,7 +82,7 @@ def test_sign_in_maps_groups_to_roles_and_keys_users_by_subject(oidc):
 
 @pytest.mark.parametrize(
     "changes",
-    [{"groups": ["/projecttogether/employees"]}, {"groups": None}, {"email_verified": False}],
+    [{"groups": ["/unrelated"]}, {"groups": None}, {"email_verified": False}],
 )
 def test_sign_in_requires_a_portal_group_and_verified_email(oidc, changes):
     assert not KeycloakBackend().verify_claims(claims(oidc, **changes))
@@ -83,7 +91,7 @@ def test_sign_in_requires_a_portal_group_and_verified_email(oidc, changes):
 def token(**changes):
     now = time.time()
     return {
-        "iss": "https://auth.projecttogether.net/realms/projecttogether",
+        "iss": "https://auth.example.invalid/realms/reimbursements",
         "aud": "reimbursement-portal",
         "azp": "reimbursement-portal",
         "sub": "subject-1",
@@ -97,7 +105,7 @@ def token(**changes):
 @pytest.mark.parametrize(
     "changes",
     [
-        {"iss": "https://auth.example.invalid/realms/projecttogether"},
+        {"iss": "https://other.example.invalid/realms/reimbursements"},
         {"aud": "another-client"},
         {"aud": ["reimbursement-portal", "another-client"]},
         {"azp": "another-client"},
@@ -114,7 +122,7 @@ def test_id_tokens_must_be_issued_for_this_client(oidc, monkeypatch, changes):
     assert KeycloakBackend().verify_token("signed")["sub"] == "subject-1"
 
 
-def test_admin_login_redirects_to_pt_login(client, oidc):
+def test_admin_login_redirects_to_keycloak(client, oidc):
     response = client.get("/admin/login/?next=/admin/portal/form/")
     assert response.status_code == 302
     assert response.url == "/oidc/authenticate/?next=%2Fadmin%2Fportal%2Fform%2F"
@@ -131,7 +139,7 @@ def test_logout_ends_the_keycloak_session(oidc, settings):
     request = RequestFactory().get("/")
     request.session = {"oidc_id_token": "id-token"}
     url = urlsplit(keycloak_logout_url(request))
-    assert url.path.endswith("/realms/projecttogether/protocol/openid-connect/logout")
+    assert url.path.endswith("/realms/reimbursements/protocol/openid-connect/logout")
     query = parse_qs(url.query)
     assert query["id_token_hint"] == ["id-token"]
     assert query["client_id"] == ["reimbursement-portal"]
@@ -210,8 +218,8 @@ def test_editors_see_only_their_forms_and_claims(client, editor, accepted):
     assert "Alex Beispiel" in page and "participant@example.invalid" in page
     assert "DE89" not in page
     detail = client.get(f"/admin/portal/claim/{accepted.pk}/change/").content.decode()
-    assert "Alex Beispiel" in detail and "Erneut verarbeiten" not in detail
-    assert client.get(f"/admin/portal/claim/{accepted.pk}/erneut-versuchen/").status_code == 403
+    assert "Alex Beispiel" in detail and "Process again" not in detail
+    assert client.get(f"/admin/portal/claim/{accepted.pk}/retry/").status_code == 403
 
 
 def test_editors_cannot_change_templates_or_the_privacy_notice(client, editor, template):
@@ -272,15 +280,15 @@ def form_settings(form, **changes):
 def test_new_forms_autosave_as_incomplete_drafts(admin_client, template, client):
     url = f"/admin/portal/form/add/?template={template.pk}"
     page = admin_client.get(url).content.decode()
-    assert "Entwurf" in page and "Veröffentlichen" in page
+    assert "Draft" in page and "Publish" in page
     assert 'name="active"' not in page and 'name="status"' not in page
-    assert "Verantwortliche" not in page and 'name="owners"' not in page
+    assert "Owners" not in page and 'name="owners"' not in page
     assert 'name="_save"' not in page and 'name="_continue"' not in page
     response = admin_client.post(url, {"_autosave": "1", "instructions": "Erste Notiz"})
     assert response.status_code == 200, response.content
     form = Form.objects.get()
     assert form.status == Form.Status.DRAFT
-    assert form.instructions == "Erste Notiz" and form.name == "Neues Formular" and form.slug
+    assert form.instructions == "Erste Notiz" and form.name == "New form" and form.slug
     assert form.field_values == {"kst": "", "ktr": ""}
     assert form.owners.get().username == "admin"
     assert response.json()["can_delete"]
@@ -298,12 +306,12 @@ def test_autosave_keeps_a_draft_and_updates_the_existing_form(admin_client, form
     form.refresh_from_db()
     assert form.name == "Neuer Name" and form.field_values["kst"] == ""
     assert form.status == Form.Status.DRAFT and Form.objects.count() == 1
-    assert response.json()["status_label"] == "Entwurf"
+    assert response.json()["status_label"] == "Draft"
 
 
 def test_retrying_a_first_autosave_updates_the_same_draft(admin_client, template):
     url = f"/admin/portal/form/add/?template={template.pk}"
-    data = {"_autosave": "1", "_creation_key": str(uuid.uuid4()), "name": "Neues Formular"}
+    data = {"_autosave": "1", "_creation_key": str(uuid.uuid4()), "name": "New form"}
     first = admin_client.post(url, data)
     assert first.status_code == 200
     data["instructions"] = "Nach Verbindungsfehler erneut gespeichert"
@@ -330,7 +338,7 @@ def test_publishing_validates_then_unpublishing_closes_the_form(admin_client, cl
     assert not response.json()["can_delete"]
     form.refresh_from_db()
     assert form.is_open()
-    assert "Unveröffentlichen" in admin_client.get(url).content.decode()
+    assert "Unpublish" in admin_client.get(url).content.decode()
     response = admin_client.post(url, form_settings(form, _publication="unpublish"))
     assert response.status_code == 200 and response.json()["status"] == "draft"
     assert response.json()["can_delete"]
@@ -403,7 +411,7 @@ def test_status_cannot_be_changed_through_autosave_fields(admin_client, form):
 
 def test_form_list_shows_publication_status(admin_client, form):
     page = admin_client.get("/admin/portal/form/").content.decode()
-    assert "Veröffentlicht" in page and ">Status<" in page
+    assert "Published" in page and ">Status<" in page
 
 
 def test_draft_deletion_requires_confirmation(admin_client, form):
@@ -412,8 +420,8 @@ def test_draft_deletion_requires_confirmation(admin_client, form):
     url = f"/admin/portal/form/{form.pk}/delete/"
     response = admin_client.get(url)
     assert response.status_code == 200
-    assert "Entwurf endgültig löschen" in response.content.decode()
-    assert "Abbrechen" in response.content.decode()
+    assert "Delete draft for good" in response.content.decode()
+    assert "Cancel" in response.content.decode()
     assert Form.objects.filter(pk=form.pk).exists()
     response = admin_client.post(url, {"csrfmiddlewaretoken": "not-a-confirmation"})
     assert response.status_code == 400
@@ -475,6 +483,72 @@ def test_bulk_deletion_cannot_include_a_published_form(admin_client, form):
     assert Form.objects.filter(pk__in=[form.pk, draft.pk]).count() == 2
 
 
+def test_archiving_a_form_closes_it_and_leaves_it_out_of_the_list(admin_client, form):
+    form.primary = True
+    form.save()
+    url = f"/admin/portal/form/{form.pk}/change/"
+    response = admin_client.post(url, form_settings(form, _publication="archive", primary="on"))
+    assert response.status_code == 200, response.content
+    assert response.json()["status"] == "archived" and not response.json()["primary"]
+    form.refresh_from_db()
+    assert form.status == Form.Status.ARCHIVED and not form.primary and not form.is_open()
+    assert Client().get(f"/f/{form.slug}/").status_code == 403
+    assert "Test Workshop" not in admin_client.get("/admin/portal/form/").content.decode()
+    page = admin_client.get("/admin/portal/form/", {"status": "archived"}).content.decode()
+    assert "Test Workshop" in page and "unarchive_forms" in page and '"archive_forms"' not in page
+    page = admin_client.get(url).content.decode()
+    assert "Unarchive" in page and "data-archived-badge>" in page
+    # Unarchiving returns the form as a draft; publishing reopens it.
+    response = admin_client.post(url, form_settings(form, _publication="unarchive"))
+    assert response.status_code == 200 and response.json()["status"] == "draft"
+    assert "Test Workshop" in admin_client.get("/admin/portal/form/").content.decode()
+
+
+def test_forms_are_archived_and_unarchived_in_bulk(client, editor, form):
+    other = Form.objects.create(
+        template=form.template,
+        slug="other",
+        name="Andere Werkstatt",
+        recipient=form.recipient,
+        support_email=form.support_email,
+    )
+    other.owners.add(editor)
+    client.force_login(editor, backend="django.contrib.auth.backends.ModelBackend")
+    page = client.get("/admin/portal/form/").content.decode()
+    assert '"archive_forms"' in page and "unarchive_forms" not in page
+    selected = [str(form.pk), str(other.pk)]
+    response = client.post(
+        "/admin/portal/form/",
+        {"action": "archive_forms", "_selected_action": selected, "index": "0"},
+        follow=True,
+    )
+    assert "1 form was archived." in response.content.decode()
+    # Editors archive only the forms they manage.
+    assert dict(Form.objects.values_list("slug", "status")) == {
+        "test": "published",
+        "other": "archived",
+    }
+    response = client.post(
+        "/admin/portal/form/?status=archived",
+        {"action": "unarchive_forms", "_selected_action": [str(other.pk)], "index": "0"},
+        follow=True,
+    )
+    assert "1 form was unarchived." in response.content.decode()
+    other.refresh_from_db()
+    assert other.status == Form.Status.DRAFT
+
+
+def test_archived_forms_without_claims_can_be_deleted(admin_client, form):
+    form.status = Form.Status.ARCHIVED
+    form.save()
+    response = admin_client.get(f"/admin/portal/form/{form.pk}/change/")
+    assert not response.context["form_delete_hidden"]
+    url = f"/admin/portal/form/{form.pk}/delete/"
+    assert "Delete archived form for good" in admin_client.get(url).content.decode()
+    assert admin_client.post(url, {"post": "yes"}).status_code == 302
+    assert not Form.objects.filter(pk=form.pk).exists()
+
+
 def test_admin_adds_a_new_privacy_notice_version(admin_client, privacy_notice):
     page = admin_client.get("/admin/portal/privacynotice/add/").content.decode()
     assert privacy_notice.text.splitlines()[0][:20] in page
@@ -491,8 +565,8 @@ def test_admin_adds_a_new_privacy_notice_version(admin_client, privacy_notice):
 def test_admin_retries_a_failed_render_with_an_audited_reason(admin_client, accepted):
     Claim.objects.filter(pk=accepted.pk).update(state=Claim.State.FAILED, error_code="timeout")
     Job.objects.all().delete()
-    url = f"/admin/portal/claim/{accepted.pk}/erneut-versuchen/"
-    assert "Erneut verarbeiten" in admin_client.get(url).content.decode()
+    url = f"/admin/portal/claim/{accepted.pk}/retry/"
+    assert "Process again" in admin_client.get(url).content.decode()
     assert admin_client.post(url, {"reason": ""}).status_code == 200
     response = admin_client.post(url, {"reason": "Sandbox repariert"})
     assert response.status_code == 302
@@ -503,17 +577,28 @@ def test_admin_retries_a_failed_render_with_an_audited_reason(admin_client, acce
 
 
 def test_admin_resend_requires_duplicate_risk_acknowledgment(admin_client, delivery):
-    delivery.state = "delivered"
-    delivery.save()
-    url = f"/admin/portal/claim/{delivery.claim_id}/erneut-versuchen/"
-    response = admin_client.post(url, {"reason": "Moss hat nichts erhalten"})
-    assert response.status_code == 200 and "doppelten Versands" in response.content.decode()
+    DeliveryAttempt.objects.create(delivery=delivery, state="delivered")
+    url = f"/admin/portal/claim/{delivery.claim_id}/retry/"
+    page = admin_client.get(url).content.decode()
+    assert "Duplicate delivery possible" in page and "acknowledge_duplicate_risk" in page
+    response = admin_client.post(url, {"reason": "Das Postfach hat nichts erhalten"})
+    assert response.status_code == 200 and "duplicate delivery" in response.content.decode()
     response = admin_client.post(
-        url, {"reason": "Moss hat nichts erhalten", "acknowledge_duplicate_risk": "on"}
+        url, {"reason": "Das Postfach hat nichts erhalten", "acknowledge_duplicate_risk": "on"}
     )
     assert response.status_code == 302
     delivery.refresh_from_db()
     assert delivery.state == "pending"
+
+
+def test_the_retry_page_says_what_a_retry_would_do_before_it_runs(admin_client, delivery):
+    url = f"/admin/portal/claim/{delivery.claim_id}/retry/"
+    page = admin_client.get(url).content.decode()
+    assert "sent to the receiving inbox again" in page and 'name="reason"' in page
+    assert "Duplicate delivery possible" not in page and "acknowledge_duplicate_risk" not in page
+    Job.objects.create(key="send-running", kind="send", delivery=delivery, state="running")
+    page = admin_client.get(url).content.decode()
+    assert "already being processed" in page and 'name="reason"' not in page
 
 
 def second_claim(form):
@@ -529,66 +614,65 @@ def second_claim(form):
         iban="DE89370400440532013000",
         purpose="Synthetischer Test",
         snapshot={},
+        resolution_due=timezone.now() + timedelta(days=90),
     )
 
 
 def test_admin_deletes_a_claim_only_after_confirmation(admin_client, accepted):
-    purge_url = f"/admin/portal/claim/{accepted.pk}/loeschen/"
+    purge_url = f"/admin/portal/claim/{accepted.pk}/purge/"
     page = admin_client.get(f"/admin/portal/claim/{accepted.pk}/change/").content.decode()
     assert purge_url in page
     response = admin_client.get(purge_url)
     page = response.content.decode()
     assert response.status_code == 200
-    assert "Antrag endgültig löschen" in page and "Abbrechen" in page
-    assert "Noch nicht an Finance gesendet" in page and "Alex Beispiel" in page
+    assert "Delete claim for good" in page and "Cancel" in page
+    assert "Not yet sent to Finance" in page and "Alex Beispiel" in page
     assert admin_client.post(purge_url, {"reason": ""}).status_code == 200
     accepted.refresh_from_db()
     assert accepted.state == Claim.State.RECEIVED and accepted.iban
     response = admin_client.post(purge_url, {"reason": "Testeinreichung"})
     assert response.status_code == 302 and response.url == "/admin/portal/claim/"
-    accepted.refresh_from_db()
-    assert accepted.state == Claim.State.PURGED and not accepted.iban
+    assert not Claim.objects.filter(pk=accepted.pk).exists()
     operation = Operation.objects.get()
-    assert (operation.action, operation.actor, operation.reason) == (
+    assert (operation.claim_id, operation.action, operation.actor, operation.reason) == (
+        None,
         "delete",
         "admin@example.invalid",
         "Testeinreichung",
     )
-    page = admin_client.get(f"/admin/portal/claim/{accepted.pk}/change/").content.decode()
-    assert purge_url not in page and "Erneut verarbeiten" not in page
-    assert "Testeinreichung" in page
-    assert admin_client.get(purge_url).status_code == 302
+    page = admin_client.get("/admin/portal/claim/").content.decode()
+    assert str(accepted.pk) not in page and "Deleted" not in page
+    assert admin_client.get(purge_url).status_code == 404
 
 
 def test_deletion_warns_when_finance_may_already_hold_the_pdf(admin_client, delivery):
     DeliveryAttempt.objects.create(delivery=delivery, state="delivered")
-    page = admin_client.get(f"/admin/portal/claim/{delivery.claim_id}/loeschen/").content.decode()
-    assert "Bereits an Finance gesendet" in page
-    assert "Noch nicht an Finance gesendet" not in page
+    page = admin_client.get(f"/admin/portal/claim/{delivery.claim_id}/purge/").content.decode()
+    assert "Already sent to Finance" in page
+    assert "Not yet sent to Finance" not in page
 
 
 def test_deletion_is_refused_while_the_claim_is_processed(admin_client, accepted):
     Job.objects.filter(kind="render").update(state="running")
     response = admin_client.post(
-        f"/admin/portal/claim/{accepted.pk}/loeschen/", {"reason": "Testeinreichung"}
+        f"/admin/portal/claim/{accepted.pk}/purge/", {"reason": "Testeinreichung"}
     )
-    assert response.status_code == 200 and "gerade verarbeitet" in response.content.decode()
+    assert response.status_code == 200 and "being processed or sent" in response.content.decode()
     accepted.refresh_from_db()
     assert accepted.state == Claim.State.RECEIVED
     assert not Operation.objects.exists()
 
 
-def test_an_interrupted_deletion_reports_that_cleanup_finishes_it(
-    admin_client, accepted, monkeypatch
-):
-    def interrupted(claim_id):
-        raise OSError("storage unavailable")
-
-    monkeypatch.setattr("portal.services.retention.purge_claim", interrupted)
-    response = admin_client.post(
-        f"/admin/portal/claim/{accepted.pk}/loeschen/", {"reason": "Testeinreichung"}, follow=True
-    )
-    assert "wird in wenigen Minuten automatisch abgeschlossen" in response.content.decode()
+def test_an_interrupted_deletion_reports_that_cleanup_finishes_it(admin_client, accepted):
+    directory = path_for(accepted.uploads.first().source_key).parent
+    directory.chmod(0o500)
+    try:
+        response = admin_client.post(
+            f"/admin/portal/claim/{accepted.pk}/purge/", {"reason": "Testeinreichung"}, follow=True
+        )
+    finally:
+        directory.chmod(0o700)
+    assert "finishes automatically within a few minutes" in response.content.decode()
     accepted.refresh_from_db()
     assert accepted.state == Claim.State.PURGING
     assert Operation.objects.get().action == "delete"
@@ -603,23 +687,23 @@ def test_bulk_deletion_confirms_then_deletes_the_selected_claims(admin_client, a
         {"action": "delete_claims", "_selected_action": selected, "index": "0"},
     )
     page = response.content.decode()
-    assert response.status_code == 200 and "2 Anträge endgültig löschen" in page
+    assert response.status_code == 200 and "Delete 2 claims for good" in page
     assert "Alex Beispiel" in page and "Sam Zweitens" in page
-    assert not Claim.objects.filter(state=Claim.State.PURGED).exists()
+    assert Claim.objects.count() == 2
     confirmation = {"action": "delete_claims", "_selected_action": selected, "post": "yes"}
     response = admin_client.post("/admin/portal/claim/", {**confirmation, "reason": ""})
     assert response.status_code == 200
-    assert not Claim.objects.filter(state=Claim.State.PURGED).exists()
+    assert Claim.objects.count() == 2
     response = admin_client.post("/admin/portal/claim/", {**confirmation, "reason": "Tests"})
     assert response.status_code == 302
-    assert Claim.objects.filter(state=Claim.State.PURGED).count() == 2
+    assert not Claim.objects.exists()
     assert Operation.objects.filter(action="delete", reason="Tests").count() == 2
 
 
 def test_editors_cannot_delete_claims(client, editor, accepted):
     accepted.form.owners.add(editor)
     client.force_login(editor, backend="django.contrib.auth.backends.ModelBackend")
-    purge_url = f"/admin/portal/claim/{accepted.pk}/loeschen/"
+    purge_url = f"/admin/portal/claim/{accepted.pk}/purge/"
     assert (
         purge_url not in client.get(f"/admin/portal/claim/{accepted.pk}/change/").content.decode()
     )
@@ -633,6 +717,168 @@ def test_editors_cannot_delete_claims(client, editor, accepted):
     accepted.refresh_from_db()
     assert accepted.state == Claim.State.RECEIVED
     assert not Operation.objects.exists()
+
+
+def test_an_archived_claim_leaves_the_list_until_it_is_unarchived(admin_client, accepted):
+    change_url = f"/admin/portal/claim/{accepted.pk}/change/"
+    archive_url = f"/admin/portal/claim/{accepted.pk}/archive/"
+    assert archive_url in admin_client.get(change_url).content.decode()
+    assert admin_client.get(archive_url).status_code == 405
+    response = admin_client.post(archive_url, follow=True)
+    page = response.content.decode()
+    assert response.redirect_chain[-1][0] == change_url
+    assert "The claim was archived." in page and "Unarchive" in page
+    accepted.refresh_from_db()
+    assert accepted.archived_at and accepted.state == Claim.State.RECEIVED
+    operation = Operation.objects.get()
+    assert (operation.claim_id, operation.action, operation.actor) == (
+        accepted.pk,
+        "archive",
+        "admin@example.invalid",
+    )
+
+    listed = admin_client.get("/admin/portal/claim/")
+    assert accepted not in listed.context["cl"].result_list
+    assert "All except archived" in listed.content.decode()
+    listed = admin_client.get("/admin/portal/claim/", {"status": "received"})
+    assert accepted not in listed.context["cl"].result_list
+    listed = admin_client.get("/admin/portal/claim/", {"status": "archived"})
+    assert list(listed.context["cl"].result_list) == [accepted]
+    page = listed.content.decode()
+    assert "Received" in page and "unarchive_claims" in page and '"archive_claims"' not in page
+    detail = admin_client.get(change_url).content.decode()
+    assert accepted.resolution_due.strftime("%d.%m.%Y") in detail
+    assert "+00:00" not in detail
+
+    response = admin_client.post(f"/admin/portal/claim/{accepted.pk}/unarchive/", follow=True)
+    assert "The claim was unarchived." in response.content.decode()
+    accepted.refresh_from_db()
+    assert accepted.archived_at is None
+    assert Operation.objects.filter(action="unarchive").exists()
+    listed = admin_client.get("/admin/portal/claim/")
+    assert list(listed.context["cl"].result_list) == [accepted]
+
+
+def test_claims_are_archived_and_unarchived_in_bulk(admin_client, accepted):
+    other = second_claim(accepted.form)
+    selected = [str(accepted.pk), str(other.pk)]
+    page = admin_client.get("/admin/portal/claim/").content.decode()
+    assert '"archive_claims"' in page and "unarchive_claims" not in page
+    response = admin_client.post(
+        "/admin/portal/claim/",
+        {"action": "archive_claims", "_selected_action": selected, "index": "0"},
+        follow=True,
+    )
+    assert "2 claims were archived." in response.content.decode()
+    assert Claim.objects.filter(archived_at__isnull=False).count() == 2
+    assert not admin_client.get("/admin/portal/claim/").context["cl"].result_count
+    response = admin_client.post(
+        "/admin/portal/claim/?status=archived",
+        {"action": "unarchive_claims", "_selected_action": [str(other.pk)], "index": "0"},
+        follow=True,
+    )
+    assert "1 claim was unarchived." in response.content.decode()
+    assert list(Claim.objects.filter(archived_at__isnull=True)) == [other]
+    # An archived claim can still be deleted for good.
+    response = admin_client.post(
+        f"/admin/portal/claim/{accepted.pk}/purge/", {"reason": "Testeinreichung"}
+    )
+    assert response.status_code == 302
+    assert not Claim.objects.filter(pk=accepted.pk).exists()
+
+
+def test_archiving_an_overdue_claim_asks_first_as_it_is_then_deleted(admin_client, accepted):
+    overdue = second_claim(accepted.form)
+    Claim.objects.filter(pk=overdue.pk).update(
+        resolution_due=overdue.submitted_at - timedelta(seconds=1)
+    )
+    archive_url = f"/admin/portal/claim/{overdue.pk}/archive/"
+    response = admin_client.post(archive_url)
+    page = response.content.decode()
+    assert response.status_code == 200 and "Archive claim?" in page
+    assert "The claim is deleted for good within minutes" in page and "Sam Zweitens" in page
+    overdue.refresh_from_db()
+    assert overdue.archived_at is None and not Operation.objects.exists()
+    response = admin_client.post(archive_url, {"post": "yes"})
+    assert response.status_code == 302
+    overdue.refresh_from_db()
+    assert overdue.archived_at
+    cleanup(execute=True)
+    assert not Claim.objects.filter(pk=overdue.pk).exists()
+
+    # In bulk, only the overdue claims are listed for confirmation.
+    other = second_claim(accepted.form)
+    Claim.objects.filter(pk=other.pk).update(resolution_due=other.submitted_at)
+    selected = [str(accepted.pk), str(other.pk)]
+    response = admin_client.post(
+        "/admin/portal/claim/",
+        {"action": "archive_claims", "_selected_action": selected, "index": "0"},
+    )
+    page = response.content.decode()
+    assert "Archive 2 claims?" in page and "1 claim is deleted for good" in page
+    assert page.count("Sam Zweitens") == 1 and "Alex Beispiel" not in page
+    assert not Claim.objects.filter(archived_at__isnull=False).exists()
+    response = admin_client.post(
+        "/admin/portal/claim/",
+        {"action": "archive_claims", "_selected_action": selected, "post": "yes"},
+        follow=True,
+    )
+    assert "2 claims were archived." in response.content.decode()
+    assert Claim.objects.filter(archived_at__isnull=False).count() == 2
+
+
+def test_editors_see_archived_claims_but_cannot_archive(client, editor, accepted):
+    accepted.form.owners.add(editor)
+    client.force_login(editor, backend="django.contrib.auth.backends.ModelBackend")
+    archive_url = f"/admin/portal/claim/{accepted.pk}/archive/"
+    page = client.get(f"/admin/portal/claim/{accepted.pk}/change/").content.decode()
+    assert archive_url not in page
+    assert "archive_claims" not in client.get("/admin/portal/claim/").content.decode()
+    assert client.post(archive_url).status_code == 403
+    client.post(
+        "/admin/portal/claim/",
+        {"action": "archive_claims", "_selected_action": [str(accepted.pk)], "index": "0"},
+    )
+    accepted.refresh_from_db()
+    assert accepted.archived_at is None
+    Claim.objects.filter(pk=accepted.pk).update(archived_at=accepted.submitted_at)
+    listed = client.get("/admin/portal/claim/", {"status": "archived"})
+    assert [claim.pk for claim in listed.context["cl"].result_list] == [accepted.pk]
+
+
+def test_status_filter_lists_the_claims_its_status_column_shows(admin_client, accepted):
+    claim_states = [
+        (Claim.State.RENDERING, None),
+        (Claim.State.READY, None),
+        (Claim.State.FAILED, None),
+        (Claim.State.READY, "pending"),
+        (Claim.State.READY, "delivered"),
+        (Claim.State.READY, "failed"),
+        (Claim.State.READY, "send_unknown"),
+        (Claim.State.PURGING, None),
+        (Claim.State.PURGING, "delivered"),
+    ]
+    for claim_state, delivery_state in claim_states:
+        claim = second_claim(accepted.form)
+        Claim.objects.filter(pk=claim.pk).update(state=claim_state)
+        if delivery_state:
+            Delivery.objects.create(
+                claim=claim, recipient="finance@example.invalid", state=delivery_state
+            )
+    claims = claim_status.annotate(Claim.objects.all())
+    columns = {claim.pk: claim_status.of(claim).code for claim in claims}
+    choices = [code for code, _label in claim_status.CHOICES]
+    assert set(columns.values()) <= set(choices)
+
+    page = admin_client.get("/admin/portal/claim/")
+    html = page.content.decode()
+    assert 'data-filter-title="Status"' in html
+    assert 'data-filter-title="Verarbeitung"' not in html
+    assert 'data-filter-title="Versand"' not in html
+    for state in choices:
+        page = admin_client.get("/admin/portal/claim/", {"status": state})
+        listed = {claim.pk for claim in page.context["cl"].result_list}
+        assert listed == {pk for pk, shown in columns.items() if shown == state}, state
 
 
 def test_claim_search_finds_a_full_reference(admin_client, accepted):
@@ -650,51 +896,205 @@ def test_admin_home_opens_the_claims(admin_client):
 
 def test_sidebar_shows_the_admin_section_only_to_template_admins(admin_client, client, editor):
     page = admin_client.get("/admin/portal/claim/").content.decode()
-    assert 'href="/admin/portal/formtemplate/"' in page
-    assert "Willkommen" not in page and "Website anzeigen" not in page
-    assert "/realms/projecttogether/account/" in page
+    assert 'data-group="Admin"' in page and 'href="/admin/portal/appsettings/"' in page
+    assert "Welcome" not in page and "View site" not in page
     client.force_login(editor, backend="django.contrib.auth.backends.ModelBackend")
     page = client.get("/admin/portal/claim/").content.decode()
     assert 'href="/admin/portal/claim/"' in page
-    assert 'href="/admin/portal/formtemplate/"' not in page
+    assert 'data-group="Admin"' not in page and 'href="/admin/portal/appsettings/"' not in page
 
 
-def suggestions(client, query):
-    response = client.get("/admin/suche/vorschlaege/", {"q": query})
+def nav_links(page):
+    """The sidebar's links: (label, href, shortcut, current)."""
+    return [
+        (label, href, shortcut, bool(current))
+        for href, shortcut, current, label in re.findall(
+            r'<li class="relative"><a href="([^"]+)" class="frame-menu-button"'
+            r'(?: data-shortcut="(\w)")?( aria-current="page")?><span class="truncate">([^<]+)<',
+            page,
+        )
+    ]
+
+
+def test_sidebar_lists_the_pages_in_groups(admin_client):
+    """Text links in groups, "G then O" for the start page and no keys for admin pages."""
+    page = admin_client.get("/admin/portal/form/").content.decode()
+    assert nav_links(page) == [
+        ("Claims", "/admin/portal/claim/", "o", False),
+        ("Forms", "/admin/portal/form/", "f", True),
+        ("General", "/admin/portal/appsettings/", "", False),
+        ("Email", "/admin/portal/emailsettings/", "", False),
+        ("Appearance", "/admin/portal/appearance/", "", False),
+        ("Templates", "/admin/portal/formtemplate/", "", False),
+        ("Privacy notice", "/admin/portal/privacynotice/", "", False),
+    ]
+    # The person at the bottom, with Appearance, Settings, Keyboard shortcuts and Sign out.
+    assert ">A<" in page and "admin@example.invalid · Template admin" in page
+    for item in ("Appearance", "Settings", "Keyboard shortcuts", "Sign out"):
+        assert f"{item}<" in page
+    assert 'href="/admin/settings/"' in page
+    # The shortcuts overview lists the keys of the sidebar.
+    assert re.search(r"<span>Forms</span>.*?G</kbd>.*?then.*?F</kbd>", page, re.S)
+
+
+def test_sidebar_keeps_the_frames_folded_state(admin_client):
+    page = admin_client.get("/admin/portal/claim/").content.decode()
+    assert 'data-state="expanded" data-collapsible=""' in page
+    admin_client.cookies["sidebar_state"] = "false"
+    page = admin_client.get("/admin/portal/claim/").content.decode()
+    assert 'data-state="collapsed" data-collapsible="offcanvas"' in page
+
+
+def test_breadcrumbs_start_at_the_sidebars_page(admin_client, accepted):
+    page = admin_client.get(f"/admin/portal/claim/{accepted.pk}/history/").content.decode()
+    crumbs = re.search(r'<ol class="frame-crumbs">(.*?)</ol>', page, re.S).group(1)
+    reference = accepted.reference
+    if len(reference) > 40:
+        reference = reference[:39] + "…"
+    assert re.findall(r'title="([^"]+)"', crumbs) == ["Claims", reference, "History"]
+    assert 'aria-current="page" title="History"' in crumbs
+    # On phones only the way back.
+    assert f'aria-label="Back to {reference}"' in page
+    page = admin_client.get("/admin/portal/appsettings/", follow=True).content.decode()
+    crumbs = re.search(r'<ol class="frame-crumbs">(.*?)</ol>', page, re.S).group(1)
+    assert "Admin" not in crumbs and 'aria-current="page" title="General"' in crumbs
+
+
+def test_settings_page_has_the_frames_cards(admin_client, oidc):
+    page = admin_client.get("/admin/settings/").content.decode()
+    for title in ("Account", "Appearance", "Keyboard shortcuts", "About"):
+        assert f">{title}</h2>" in page
+    assert "/realms/reimbursements/account/" in page
+    assert "Reimbursement Portal is ProjectTogether's open-source app" in page
+    assert 'href="https://github.com/projecttogether/reimbursement-portal"' in page
+    # The sign-in account is on the settings page, not in the user menu.
+    assert "/account/" not in admin_client.get("/admin/portal/claim/").content.decode()
+
+
+def test_settings_page_is_for_everyone_with_admin_access(client, editor):
+    assert client.get("/admin/settings/").status_code == 302
+    client.force_login(editor, backend="django.contrib.auth.backends.ModelBackend")
+    page = client.get("/admin/settings/").content.decode()
+    assert ">Appearance</h2>" in page and ">Account</h2>" not in page
+
+
+def results(client, query):
+    response = client.get("/admin/search/suggestions/", {"q": query})
     assert response.status_code == 200
-    return {group["label"]: group["items"] for group in response.json()["groups"]}
+    return response.json()["results"]
 
 
 def test_search_finds_only_what_the_person_may_open(client, editor, accepted, template):
     client.force_login(editor, backend="django.contrib.auth.backends.ModelBackend")
-    assert suggestions(client, "Alex") == {}
-    assert suggestions(client, template.name[:6]) == {}
+    assert results(client, "Alex") == []
+    assert results(client, template.name[:6]) == []
     accepted.form.owners.add(editor)
-    groups = suggestions(client, "Alex")
-    assert [item["name"] for item in groups["Anträge"]] == ["Alex Beispiel"]
-    assert groups["Anträge"][0]["url"] == f"/admin/portal/claim/{accepted.pk}/change/"
-    assert suggestions(client, accepted.reference[:8]) == {}
-    assert "Anträge" in suggestions(client, accepted.reference)
-    assert suggestions(client, "formu")["Navigation"][0]["url"] == "/admin/portal/form/"
-    assert suggestions(client, "a") == {}
+    assert results(client, "Alex") == [
+        {
+            "href": f"/admin/portal/claim/{accepted.pk}/change/",
+            "title": "Alex Beispiel",
+            "reference": accepted.bookkeeping_reference or str(accepted.pk)[:8],
+            "kind": "Claim",
+        }
+    ]
+    assert results(client, accepted.reference[:8]) == []
+    assert [result["title"] for result in results(client, accepted.reference)] == ["Alex Beispiel"]
+    # The frame finds the pages itself, in the sidebar.
+    assert "/admin/portal/form/" not in [result["href"] for result in results(client, "Forms")]
+    assert results(client, "a") == []
 
 
-def test_template_admins_find_templates_and_settings(admin_client, template):
-    groups = suggestions(admin_client, template.name[:6])
-    assert groups["Vorlagen"][0]["url"] == f"/admin/portal/formtemplate/{template.pk}/change/"
-    assert suggestions(admin_client, "datenschutz")["Navigation"][0]["name"] == "Datenschutzhinweis"
+def test_template_admins_find_templates(admin_client, template):
+    assert results(admin_client, template.name[:6]) == [
+        {
+            "href": f"/admin/portal/formtemplate/{template.pk}/change/",
+            "title": template.name,
+            "reference": "",
+            "kind": "Template",
+        }
+    ]
+
+
+def test_search_finds_archived_claims_and_forms_and_marks_them(admin_client, accepted):
+    Claim.objects.filter(pk=accepted.pk).update(archived_at=accepted.submitted_at)
+    Form.objects.filter(pk=accepted.form_id).update(status=Form.Status.ARCHIVED)
+    assert [result["kind"] for result in results(admin_client, "Alex")] == ["Archived"]
+    assert [result["kind"] for result in results(admin_client, "Workshop")] == ["Archived"]
+    page = admin_client.get("/admin/search/", {"q": "Alex"}).content.decode()
+    assert f"Test Workshop · {accepted.reference} · Archived" in page
 
 
 def test_search_page_lists_all_results(admin_client, accepted):
-    page = admin_client.get("/admin/suche/", {"q": "Beispiel"}).content.decode()
+    page = admin_client.get("/admin/search/", {"q": "Beispiel"}).content.decode()
     assert "Alex Beispiel" in page and f"/admin/portal/claim/{accepted.pk}/change/" in page
-    assert "Keine Treffer" in admin_client.get("/admin/suche/", {"q": "zzz"}).content.decode()
+    assert "No results" in admin_client.get("/admin/search/", {"q": "zzz"}).content.decode()
+    page = admin_client.get("/admin/search/", {"q": "privacy"}).content.decode()
+    assert "Pages" in page and 'href="/admin/portal/privacynotice/"' in page
 
 
 def test_list_search_box_sends_the_query_and_reset_clears_it(admin_client, accepted):
-    page = admin_client.get("/admin/portal/claim/", {"q": "Alex", "state": "received"})
+    page = admin_client.get("/admin/portal/claim/", {"q": "Alex", "status": "received"})
     html = page.content.decode()
     assert 'name="q" value="Alex"' in html
-    assert '<input type="hidden" name="state" value="received">' in html
+    assert '<input type="hidden" name="status" value="received">' in html
     assert '<input type="hidden" name="q"' not in html
     assert 'href="?"' in html
+
+
+def test_local_admin_sidebar_has_no_identity_provider_account_link(admin_client):
+    page = admin_client.get("/admin/portal/claim/").content.decode()
+    assert "/account/" not in page
+
+
+def test_failed_sign_ins_land_on_the_no_access_page(client, settings):
+    response = client.get(settings.LOGIN_REDIRECT_URL_FAILURE)
+    assert response.status_code == 403 and "No access" in response.content.decode()
+
+
+def open_now(client):
+    page = client.get("/admin/portal/form/").content.decode()
+    return re.search(r'<td class="field-open_now">(.*?)</td>', page, re.S).group(1)
+
+
+@pytest.mark.parametrize(
+    ("unavailable", "reason"),
+    [
+        ("recipient", "Receiving inbox not approved"),
+        ("privacy_notice", "No privacy notice"),
+        ("email", "Email not set up"),
+    ],
+)
+def test_open_now_shows_why_an_open_form_accepts_no_claims(
+    admin_client, form, settings, unavailable, reason
+):
+    assert 'alt="True"' in open_now(admin_client)
+    if unavailable == "recipient":
+        settings.APPROVED_DELIVERY_RECIPIENTS = ["other@example.invalid"]
+    elif unavailable == "email":
+        settings.MAIL_DELIVERY_MODE, settings.MAILERSEND_API_TOKEN = "send", ""
+    else:
+        PrivacyNotice.objects.all().delete()
+    cell = open_now(admin_client)
+    assert form.is_open() and 'alt="False"' in cell and reason in cell
+    Form.objects.filter(pk=form.pk).update(status=Form.Status.DRAFT)
+    cell = open_now(admin_client)
+    assert 'alt="False"' in cell and reason not in cell
+
+
+def test_the_forms_list_reads_the_privacy_notice_once_per_page(admin_client, form, template):
+    def notice_queries():
+        with CaptureQueriesContext(connection) as captured:
+            assert admin_client.get("/admin/portal/form/").status_code == 200
+        return [q for q in captured if "portal_privacynotice" in q["sql"]]
+
+    for n in range(3):
+        Form.objects.create(
+            template=template,
+            slug=f"more-{n}",
+            name=f"More {n}",
+            field_values=form.field_values,
+            recipient=form.recipient,
+            support_email=form.support_email,
+            status=Form.Status.PUBLISHED,
+        )
+    assert len(notice_queries()) == 1

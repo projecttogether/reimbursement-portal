@@ -5,9 +5,10 @@ import pytest
 from django.apps import apps
 from django.utils import timezone
 
-from portal.models import Claim, DeliveryAttempt, PrivacyNotice
+from portal.models import Claim, DeliveryAttempt, Form, PrivacyNotice
 from portal.privacy_notice import DEFAULT_PRIVACY_NOTICE
 from portal.services import delivery as deliveries
+from portal.services import operations, retention
 from portal.services.retention import cleanup
 from portal.services.storage import path_for
 
@@ -31,6 +32,26 @@ def test_delivery_schedules_pdf_and_content_deletion(delivery, settings):
     )
 
 
+@pytest.mark.parametrize(
+    ("state", "dated"),
+    [("delivered", True), ("failed", False), ("send_unknown", False), ("provider_accepted", None)],
+)
+def test_retention_follows_the_finance_delivery(accepted, settings, state, dated):
+    accepted.pdf_due = accepted.retention_due = earlier = timezone.now()
+    delivered_at = accepted.submitted_at + timedelta(days=100)
+    retention.follow_delivery(accepted, state, delivered_at)
+    accepted.refresh_from_db()
+    if dated is None:
+        # Not resolved either way: the stored dates stay as they were.
+        assert accepted.pdf_due == accepted.retention_due != earlier
+    elif dated:
+        assert accepted.pdf_due == delivered_at + timedelta(days=settings.PDF_RETENTION_DAYS)
+        # Content stays at least as long as the PDF.
+        assert accepted.retention_due == accepted.pdf_due
+    else:
+        assert accepted.pdf_due is None and accepted.retention_due is None
+
+
 def test_pdf_is_deleted_first_and_content_after_ninety_days(delivery):
     claim = delivered(delivery)
     pdf = path_for(claim.pdf_key)
@@ -43,8 +64,7 @@ def test_pdf_is_deleted_first_and_content_after_ninety_days(delivery):
     assert claim.state == Claim.State.READY and claim.iban and claim.uploads.count() == 2
     Claim.objects.filter(pk=claim.pk).update(retention_due=timezone.now() - timedelta(seconds=1))
     cleanup(execute=True)
-    claim.refresh_from_db()
-    assert claim.state == Claim.State.PURGED and not claim.iban
+    assert not Claim.objects.filter(pk=claim.pk).exists()
 
 
 def test_failed_delivery_keeps_the_pdf_for_resolution(delivery):
@@ -57,11 +77,55 @@ def test_failed_delivery_keeps_the_pdf_for_resolution(delivery):
     assert claim.pdf_key
 
 
+def test_an_archived_claim_needs_no_resolution_and_goes_on_its_resolution_date(delivery):
+    DeliveryAttempt.objects.create(delivery=delivery, state="failed")
+    deliveries.refresh(delivery)
+    claim = Claim.objects.get(pk=delivery.claim_id)
+    past = timezone.now() - timedelta(seconds=1)
+    Claim.objects.filter(pk=claim.pk).update(resolution_due=past)
+    assert cleanup()["unresolved_near_expiry"] == 1
+    cleanup(execute=True)
+    assert Claim.objects.filter(pk=claim.pk).exists()
+
+    operations.archive([claim.pk], actor="admin")
+    claim.refresh_from_db()
+    assert retention.content_due(claim) == past and claim.retention_due is None
+    result = cleanup()
+    assert (result["claims_due"], result["unresolved_near_expiry"]) == (1, 0)
+    cleanup(execute=True)
+    assert not Claim.objects.filter(pk=claim.pk).exists()
+    assert not path_for("pdf/test.pdf").exists()
+
+
+def test_an_archived_claim_waits_for_its_resolution_or_retention_date(delivery):
+    Claim.objects.filter(pk=delivery.claim_id).update(archived_at=timezone.now())
+    claim = Claim.objects.get(pk=delivery.claim_id)
+    assert retention.content_due(claim) == claim.resolution_due > timezone.now()
+    cleanup(execute=True)
+    assert Claim.objects.filter(pk=claim.pk).exists()
+    # Once resolved, the retention date decides, as for any claim.
+    claim = delivered(delivery)
+    assert retention.content_due(claim) == claim.retention_due
+    Claim.objects.filter(pk=claim.pk).update(resolution_due=timezone.now() - timedelta(seconds=1))
+    cleanup(execute=True)
+    assert Claim.objects.filter(pk=claim.pk).exists()
+    Claim.objects.filter(pk=claim.pk).update(retention_due=timezone.now() - timedelta(seconds=1))
+    cleanup(execute=True)
+    assert not Claim.objects.filter(pk=claim.pk).exists()
+
+
+def test_archived_forms_are_never_purged(form):
+    form.status = Form.Status.ARCHIVED
+    form.save()
+    cleanup(execute=True)
+    assert Form.objects.filter(pk=form.pk, status=Form.Status.ARCHIVED).exists()
+
+
 def test_privacy_texts_state_the_retention_periods(client, form, settings):
     assert (settings.PDF_RETENTION_DAYS, settings.CONTENT_RETENTION_DAYS) == (7, 90)
     page = client.get("/f/test/").content.decode()
     for text in (DEFAULT_PRIVACY_NOTICE, page):
-        assert f"{settings.PDF_RETENTION_DAYS} Tage nach der Zustellung an Finance" in text
+        assert f"{settings.PDF_RETENTION_DAYS} Tage nach der Zustellung an die Buchhaltung" in text
         assert f"{settings.CONTENT_RETENTION_DAYS} Tage nach dem Einreichen" in text
 
 

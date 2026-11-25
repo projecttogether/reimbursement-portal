@@ -4,7 +4,7 @@ umask 077
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 restore_project="${1:?Supply the disposable capacity project name}"
 restore_output="${2:?Supply the private evidence directory}"
-if [[ ! "$restore_project" =~ ^pt-reimbursement-capacity-[0-9-]+$ ]]; then
+if [[ ! "$restore_project" =~ ^reimbursements-capacity-[0-9-]+$ ]]; then
   printf 'Only disposable capacity projects are accepted.\n' >&2
   exit 1
 fi

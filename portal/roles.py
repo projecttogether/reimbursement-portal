@@ -1,4 +1,4 @@
-"""Admin roles and form access. PT Login groups map to these Django groups at every sign-in.
+"""Admin roles and form access. Keycloak groups map to these Django groups at every sign-in.
 
 Template admins manage templates, the privacy notice, every form and claim actions.
 Form editors create forms from templates and see the claims of the forms they own.

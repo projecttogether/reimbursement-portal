@@ -1,23 +1,34 @@
 import json
-from datetime import timedelta
 
-from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from django.utils.crypto import constant_time_compare
 
+from portal.i18n import t
 from portal.intake import IntakeError
 from portal.models import Claim, Expense
-from portal.services import claim_validation, confirmations, drafts, queue, uploads
+from portal.services import (
+    claim_validation,
+    confirmations,
+    drafts,
+    queue,
+    retention,
+    terms,
+    uploads,
+)
 from portal.services.drafts import digest
 from portal.services.references import allocate_reference
 
 
 @transaction.atomic
-def submit_claim(participant, form_slug, data):
-    """Accept the participant's draft as a claim; a repeated identical request returns it."""
+def submit_claim(participant, form_slug, data, *, numbered=True):
+    """Accept the participant's draft as a claim; a repeated identical request returns it.
+
+    `numbered=False` is for the setup check: its claim takes no bookkeeping reference,
+    so the sequence Finance books has no gap, and goes by its ID instead.
+    """
     if not isinstance(data, dict) or data.get("website"):
-        raise IntakeError("Ungültige Anfrage.")
+        raise IntakeError(t("Invalid request."))
     # Compare an exact canonical request on replay, even if the form changed or closed later.
     replay_data = {key: value for key, value in data.items() if key not in {"token", "website"}}
     payload_hash = digest(
@@ -30,48 +41,40 @@ def submit_claim(participant, form_slug, data):
     except drafts.AlreadySubmitted as submitted:
         if not constant_time_compare(submitted.draft.payload_hash, payload_hash):
             raise IntakeError(
-                "Dieses Formular wurde bereits mit anderen Angaben eingereicht.", status=409
+                t("This form has already been submitted with different details."), status=409
             ) from None
         return submitted.draft.claim
     # A privacy notice published since the gate's check must not enter this claim.
-    snapshot = form.snapshot()
-    if snapshot["revision"] != draft.revision:
+    accepted = terms.of(form)
+    if accepted.revision != draft.revision:
         raise drafts.Outdated()
-    payload, total = claim_validation.submission(data, form).require_valid()
-    all_ids = [file_id for row in payload["expenses"] for file_id in row["uploads"]] + [
-        payload["signature"]
-    ]
-    files = uploads.claimable(draft, all_ids)
-    signature = files[payload["signature"]]
-    if signature.kind != "signature":
-        raise IntakeError("Eine Datei ist nicht verfügbar. Bitte lade sie erneut hoch.")
-    if Expense.objects.filter(id__in=[row["id"] for row in payload["expenses"]]).exists():
-        raise IntakeError("Ungültige Positionskennung. Bitte öffne ein neues Formular.", status=409)
-    fields = {
-        key: value
-        for key, value in payload.items()
-        if key not in {"signature", "expenses", "declaration", "privacy_acknowledged", "is_trip"}
-    }
+    snapshot = terms.snapshot(form, accepted)
+    entries = claim_validation.submission(data, accepted).require_valid()
+    files = uploads.claimable(draft, entries.expenses, entries.signature)
+    if Expense.objects.filter(id__in=[row["id"] for row in entries.expenses]).exists():
+        raise IntakeError(t("Invalid item ID. Please open a new form."), status=409)
     submitted_at = timezone.now()
     claim = Claim.objects.create(
         form=form,
         submitted_at=submitted_at,
-        bookkeeping_reference=allocate_reference(form.slug, fields["full_name"], submitted_at),
+        bookkeeping_reference=allocate_reference(
+            form.slug, entries.claim["full_name"], submitted_at
+        )
+        if numbered
+        else None,
         snapshot=snapshot,
-        total=total,
-        resolution_due=timezone.now() + timedelta(days=settings.CONTENT_RETENTION_DAYS),
-        **fields,
+        total=entries.total,
+        resolution_due=retention.resolution_due(submitted_at),
+        **entries.claim,
     )
-    for row in payload["expenses"]:
-        for position, file_id in enumerate(row["uploads"]):
-            uploads.attach(files[file_id], claim, expense_id=row["id"], position=position)
+    for row in entries.expenses:
         Expense.objects.create(
             claim=claim, **{key: value for key, value in row.items() if key != "uploads"}
         )
-    uploads.attach(signature, claim)
+    files.attach(claim)
+    # A replay returns this claim until it is deleted; the draft no longer expires.
     draft.claim, draft.payload_hash = claim, payload_hash
-    draft.expires_at = timezone.now() + timedelta(days=7)
-    draft.save(update_fields=["claim", "payload_hash", "expires_at"])
+    draft.save(update_fields=["claim", "payload_hash"])
     queue.enqueue("render", claim)
     confirmations.schedule(claim)
     return claim

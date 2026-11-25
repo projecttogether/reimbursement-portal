@@ -91,7 +91,7 @@ const base = process.env.BASE_URL || "http://127.0.0.1:8000";
     await mileage.locator('[data-field="vehicle_registration"][aria-invalid="true"]').waitFor();
     // A reorder must not strand errors on another row or lose the current error.
     await mileage.locator('[data-action="up"]').click();
-    await plate.fill("B-PT 123");
+    await plate.fill("B-AB 123");
     await page.waitForFunction(() => !document.querySelector('[data-field="vehicle_registration"]').hasAttribute("aria-invalid"));
     assert.equal(await mileage.locator('[data-field="route_from"]').getAttribute("aria-invalid"), null);
     await mileage.locator('[data-field="travel_date"]').fill("2026-10-21");

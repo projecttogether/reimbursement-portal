@@ -1,19 +1,16 @@
 /* Run against the local demo with a worker and local-only email delivery.
- * Requires Playwright in Node's module path. No production data or recipients.
+ * Requires Playwright (`npm ci` in this directory). No production data or recipients.
+ * Without FIXTURES_DIR, synthetic fixtures are drawn into OUTPUT_DIR/fixtures.
  */
 const { chromium } = require("playwright");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const { createFixtures } = require("./fixtures.cjs");
 
 const base = process.env.BASE_URL || "http://127.0.0.1:8000";
 const formSlug = process.env.FORM_SLUG || "demo";
-const fixtures = process.env.FIXTURES_DIR;
 const output = process.env.OUTPUT_DIR || "/tmp/reimbursement-browser";
-if (!fixtures)
-  throw new Error(
-    "Set FIXTURES_DIR to synthetic train.png, hotel.pdf, and signature.png fixtures.",
-  );
 fs.mkdirSync(output, { recursive: true });
 
 (async () => {
@@ -21,6 +18,14 @@ fs.mkdirSync(output, { recursive: true });
     headless: true,
     args: ["--no-sandbox"],
   });
+  const fixtures =
+    process.env.FIXTURES_DIR ||
+    (await createFixtures(browser, path.join(output, "fixtures")).catch(
+      async (error) => {
+        await browser.close();
+        throw error;
+      },
+    ));
   const context = await browser.newContext({
     viewport: { width: 1440, height: 1000 },
   });
@@ -61,7 +66,7 @@ fs.mkdirSync(output, { recursive: true });
         assert.equal(await page.locator('[data-field="purpose"]').count(), 0);
         for (const [field, value] of Object.entries({
           travel_date: "2026-10-20",
-          vehicle_registration: "B-PT 123",
+          vehicle_registration: "B-AB 123",
           route_from: "Hamburg",
           route_to: "Berlin",
           distance_km: "100",
@@ -81,7 +86,7 @@ fs.mkdirSync(output, { recursive: true });
         await page.locator("#id_trip_start").fill("2026-10-20");
         await page.locator("#id_trip_end").fill("2026-10-21");
         for (const [index, merchant, amount, file] of [
-          [0, "Test Rail", "10,10", "train.png"],
+          [0, "Belegverkauf", "10,10", "train.png"],
           [1, "Test Hotel", "20,20", "hotel.pdf"],
         ]) {
           if (index) await page.locator("#add-expense").click();
@@ -147,7 +152,7 @@ fs.mkdirSync(output, { recursive: true });
       );
       if (signatureMode === "mileage") {
         const text = await page.locator("#review-content").innerText();
-        assert.match(text, /B-PT 123/);
+        assert.match(text, /B-AB 123/);
         assert.match(text, /21.10.2026/);
       }
       assert.match(
@@ -211,7 +216,10 @@ fs.mkdirSync(output, { recursive: true });
         /^Erst\/\d{4}-\d{2}-\d{2}\/[^/]+\/beispiel\/\d{6}$/,
       );
       assert.equal(reference.split("/")[2], formSlug);
-      assert.match(await page.locator("body").innerText(), /binnen einer Woche/);
+      assert.match(
+        await page.locator("body").innerText(),
+        /Kontaktadresse im Formular/,
+      );
       await page.waitForFunction(
         () =>
           document

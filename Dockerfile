@@ -1,5 +1,6 @@
-FROM ghcr.io/astral-sh/uv:0.12.24@sha256:3af4716e991d6956a41e573eab705d0ee08500cd829ed30293eb8472f372c65a AS uv
-FROM python:3.13-slim-bookworm@sha256:e32be0e55814a08977501ca863271d9bd02443710db8f2afaf8372e2c4508530 AS base
+FROM ghcr.io/astral-sh/uv:0.13.9@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678445e0254284eecf84db79a7d AS uv
+
+FROM python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS base
 COPY --from=uv /uv /usr/local/bin/uv
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 fonts-dejavu-core libseccomp2 \
@@ -18,7 +19,7 @@ ENV PATH="/app/.venv/bin:$PATH"
 CMD ["pytest", "-q"]
 
 FROM base AS assets
-# The stylesheet is built here with the pinned standalone Tailwind CLI; no Node.
+# The stylesheet is built here with the pinned standalone Tailwind CLI.
 COPY scripts/tailwind.py scripts/
 COPY portal portal
 RUN python scripts/tailwind.py build
@@ -27,11 +28,13 @@ FROM base AS runtime
 RUN uv sync --locked --no-dev
 COPY . .
 COPY --from=assets /app/portal/static/portal/ui.css portal/static/portal/ui.css
-# Coolify injects deployment variables as build arguments. Static assets need
-# only development defaults, even when those arguments are empty or unresolved.
+# Static assets need only development defaults.
 RUN env -i PATH="$PATH" PYTHONDONTWRITEBYTECODE=1 DJANGO_DEBUG=1 DEPLOYMENT_ENV=development \
     /app/.venv/bin/python manage.py collectstatic --noinput \
     && mkdir -p var/private && chown -R portal:portal /app
+# The Deploy workflow sets the version (the commit); images built from source have none.
+ARG APP_VERSION=""
+ENV APP_VERSION=${APP_VERSION}
 USER portal
 ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8000

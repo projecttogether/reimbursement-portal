@@ -13,11 +13,16 @@ from django.utils import timezone
 from portal.jobs import reclaim_stale_jobs, run_one
 from portal.models import Claim, Delivery, DeliveryAttempt, DeliveryEvent, Job, Operation
 from portal.services import delivery as deliveries
-from portal.services import mailersend
-from portal.services.delivery import ingest_event
+from portal.services import evidence, mailersend, operations, outbound
 from portal.services.storage import path_for
 
 pytestmark = pytest.mark.django_db
+
+
+def ingest_event(data):
+    """A verified webhook, as the view hands it on."""
+    if provided := mailersend.webhook_evidence(data):
+        evidence.record(provided)
 
 
 def mock_provider(monkeypatch, handler):
@@ -57,7 +62,7 @@ def test_provider_outcomes(delivery, settings, monkeypatch, response, state, cod
     settings.MAIL_DELIVERY_MODE = "mailersend"
     mock_provider(monkeypatch, lambda request: response)
     attempt = DeliveryAttempt.objects.create(delivery=delivery)
-    result = deliveries.send(attempt)
+    result = outbound.send(deliveries.compose, attempt)
     assert (result.state, result.error_code) == (state, code)
 
 
@@ -69,8 +74,8 @@ def test_timeout_after_transmission_is_not_automatically_resent(delivery, settin
         calls.append(request)
         payload = json.loads(request.content)
         assert payload["to"] == [{"email": "finance@example.invalid"}]
-        assert payload["from"]["email"] == "no-reply@projecttogether.org"
-        assert payload["reply_to"] == {"email": "buchhaltung@projecttogether.org"}
+        assert payload["from"]["email"] == "no-reply@example.invalid"
+        assert payload["reply_to"] == {"email": "finance@example.invalid"}
         assert payload["settings"] == {
             "track_opens": False,
             "track_clicks": False,
@@ -194,7 +199,7 @@ def test_stale_send_lease_becomes_unknown(delivery):
 
 def test_staging_recipient_guard_blocks_even_configured_address(delivery, settings):
     settings.TEST_RECIPIENT_ALLOWLIST = ["test-only@example.invalid"]
-    result = deliveries.send(DeliveryAttempt.objects.create(delivery=delivery))
+    result = outbound.send(deliveries.compose, DeliveryAttempt.objects.create(delivery=delivery))
     assert result.error_code == "test_recipient_blocked"
 
 
@@ -340,16 +345,14 @@ def test_failed_render_is_requeued_without_duplicate_risk(accepted):
 @pytest.mark.parametrize(
     ("claim_state", "delivery_state", "status", "final"),
     [
-        (Claim.State.RENDERING, None, "rendering", False),
-        (Claim.State.FAILED, None, "processing_failed", True),
-        (Claim.State.READY, "send_unknown", "send_unknown", False),
-        (Claim.State.READY, "failed", "delivery_failed", True),
+        (Claim.State.RENDERING, None, "processing", False),
+        (Claim.State.FAILED, None, "problem", True),
+        (Claim.State.READY, "send_unknown", "processing", False),
+        (Claim.State.READY, "failed", "problem", True),
         (Claim.State.READY, "delivered", "delivered", True),
     ],
 )
-def test_participant_sees_one_status_vocabulary(
-    prepared, claim_state, delivery_state, status, final
-):
+def test_participant_sees_three_outcomes(prepared, claim_state, delivery_state, status, final):
     client = prepared["client"]
     response = client.post(
         "/f/test/submit/", data=json.dumps(prepared["data"]), content_type="application/json"
@@ -364,44 +367,103 @@ def test_participant_sees_one_status_vocabulary(
     assert (result["state"], result["final"]) == (status, final)
 
 
-def test_operator_status_shows_the_delivery_until_content_is_purged(accepted, delivery):
-    accepted.refresh_from_db()
-    assert deliveries.operator_status(accepted).state == "pending"
-    Delivery.objects.filter(pk=delivery.pk).update(state="failed", error_code="hard_bounce")
-    accepted.refresh_from_db()
-    status = deliveries.operator_status(accepted)
-    assert (status.state, status.error_code, status.duplicate_risk) == (
-        "failed",
-        "hard_bounce",
-        False,
+@pytest.mark.parametrize(
+    ("states", "risk"),
+    [
+        ([], False),
+        (["failed"], False),
+        (["send_unknown", "failed"], True),
+        (["provider_accepted"], True),
+        (["delivered"], True),
+    ],
+)
+def test_a_resend_needs_acknowledgment_while_finance_may_hold_a_copy(delivery, states, risk):
+    for state in states:
+        DeliveryAttempt.objects.create(delivery=delivery, state=state)
+    deliveries.refresh(delivery)
+    claim = Claim.objects.get(pk=delivery.claim_id)
+    assert deliveries.may_have_reached_finance(claim) is risk
+    assert operations.plan_retry(claim) == operations.Retry(operations.RESEND, risk)
+    if risk:
+        with pytest.raises(operations.ActionRefused) as refused:
+            operations.retry(claim.pk, actor="operator", reason="Checked")
+        assert refused.value.code == "duplicate_risk"
+    operations.retry(claim.pk, actor="operator", reason="Checked", acknowledge_duplicate_risk=True)
+    delivery.refresh_from_db()
+    assert delivery.state == "pending"
+    assert Job.objects.filter(kind="send", state="pending").count() == 1
+
+
+@pytest.mark.parametrize(
+    ("state", "active_job", "plan"),
+    [
+        (Claim.State.FAILED, False, operations.Retry(operations.RENDER)),
+        (Claim.State.FAILED, True, "active_job"),
+        (Claim.State.READY, False, "pdf_removed"),
+        (Claim.State.RECEIVED, False, "not_retryable"),
+        (Claim.State.PURGING, False, "not_retryable"),
+    ],
+)
+def test_what_a_retry_would_do(accepted, state, active_job, plan):
+    Job.objects.exclude(kind="render").delete()
+    Job.objects.update(state="pending" if active_job else "done")
+    Claim.objects.filter(pk=accepted.pk).update(state=state, pdf_key="")
+    claim = Claim.objects.get(pk=accepted.pk)
+    if isinstance(plan, operations.Retry):
+        assert operations.plan_retry(claim) == plan
+    else:
+        with pytest.raises(operations.ActionRefused) as refused:
+            operations.plan_retry(claim)
+        assert refused.value.code == plan
+
+
+def test_mailersend_reads_back_the_attempt_tag_it_sends(delivery, settings, monkeypatch):
+    settings.MAIL_DELIVERY_MODE = "mailersend"
+    sent = []
+
+    def provider(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(202, headers={"x-message-id": "message-9"})
+
+    mock_provider(monkeypatch, provider)
+    attempt = DeliveryAttempt.objects.create(delivery=delivery)
+    outbound.send(deliveries.compose, attempt)
+    webhook = {
+        "type": "activity.delivered",
+        "created_at": "2026-11-11T10:00:00Z",
+        "data": {"id": "event-9", "recipient": delivery.recipient, "tags": sent[0]["tags"]},
+    }
+    provided = mailersend.webhook_evidence(webhook)
+    assert (provided.attempt_id, provided.message_id) == (str(attempt.pk), "")
+    evidence.record(provided)
+    attempt.refresh_from_db()
+    assert attempt.state == "delivered"
+
+
+def test_resend_of_a_delivered_claim_is_retried_after_a_refused_connection(
+    delivery, settings, monkeypatch
+):
+    settings.MAIL_DELIVERY_MODE = "mailersend"
+    DeliveryAttempt.objects.create(delivery=delivery, state="delivered", message_id="first")
+    delivery.state = "delivered"
+    delivery.save()
+    calls = []
+
+    def refuse_once(request):
+        calls.append(request)
+        if len(calls) == 1:
+            raise httpx.ConnectError("synthetic refusal", request=request)
+        return httpx.Response(202, headers={"x-message-id": "second"})
+
+    mock_provider(monkeypatch, refuse_once)
+    operations.retry(
+        delivery.claim_id, actor="operator", reason="Lost", acknowledge_duplicate_risk=True
     )
-    accepted.state = Claim.State.PURGING
-    assert deliveries.operator_status(accepted).state == Claim.State.PURGING
-
-
-def test_operator_status_without_delivery_shows_the_claim_and_its_error(accepted):
-    accepted.state, accepted.error_code = Claim.State.FAILED, "document_process_failed"
-    status = deliveries.operator_status(accepted)
-    assert (status.state, status.error_code) == (Claim.State.FAILED, "document_process_failed")
-    assert not status.duplicate_risk
-
-
-@pytest.mark.parametrize("state", ["pending", "provider_accepted", "send_unknown", "delivered"])
-def test_duplicate_risk_is_what_a_retry_refuses_without_acknowledgment(delivery, state):
-    Delivery.objects.filter(pk=delivery.pk).update(state=state)
-    claim = Claim.objects.select_related("delivery").get(pk=delivery.claim_id)
-    assert deliveries.operator_status(claim).duplicate_risk
-    with pytest.raises(deliveries.DuplicateRisk):
-        deliveries.retry(claim)
-
-
-def test_unresolved_claims_are_overdue_until_delivered_or_purged(accepted):
-    later = accepted.resolution_due + timedelta(seconds=1)
-    assert not deliveries.operator_status(
-        accepted, now=accepted.resolution_due - timedelta(1)
-    ).overdue
-    assert deliveries.operator_status(accepted, now=later).overdue
-    accepted.retention_due = later
-    assert not deliveries.operator_status(accepted, now=later).overdue
-    accepted.retention_due, accepted.state = None, Claim.State.PURGED
-    assert not deliveries.operator_status(accepted, now=later).overdue
+    assert run_one()
+    assert Job.objects.get().state == "pending"
+    Job.objects.update(run_after=timezone.now())
+    assert run_one()
+    assert len(calls) == 2
+    assert Job.objects.get().state == "done"
+    states = DeliveryAttempt.objects.order_by("created_at").values_list("state", flat=True)
+    assert list(states) == ["delivered", "pending", "provider_accepted"]

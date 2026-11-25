@@ -17,7 +17,7 @@ class Migration(migrations.Migration):
             name="description",
             field=models.TextField(
                 blank=True,
-                default="Beantrage hier die Erstattung von Kosten, die du für ProjectTogether privat ausgelegt hast – zum Beispiel Fahrt- und Übernachtungskosten oder andere Auslagen wie Druckkosten. Wir stellen deine Angaben und Belege in einer PDF für unser Finance-Team zusammen.",
+                default="Reiche deine privat ausgelegten Kosten zur Erstattung ein. Deine Angaben, Belege und Unterschrift werden als PDF an die Buchhaltung gesendet.",
                 help_text="Text unter dem Titel. Leer lassen für die Standardbeschreibung.",
                 verbose_name="Beschreibung",
             ),

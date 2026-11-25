@@ -2,17 +2,18 @@ from decimal import Decimal
 
 from django.db import migrations
 
-from portal.constants import DECLARATION, DECLARATION_VERSION
 from portal.privacy_notice import DEFAULT_PRIVACY_NOTICE
+
+# The declaration as it was when this migration was written; the app's default now
+# follows the app language.
+DECLARATION = (
+    "Hiermit bestätige ich, dass die angegebenen Auslagen tatsächlich entstanden sind, "
+    "dem genannten Zweck dienen und bisher nicht erstattet wurden."
+)
+DECLARATION_VERSION = "reimbursement-v1"
 
 
 def seed(apps, schema_editor):
-    if "portal_formtemplate" not in schema_editor.connection.introspection.table_names():
-        # Django skips the rewritten 0001 on databases from the event-based release.
-        raise RuntimeError(
-            "This database was created by the event-based release. Reset the database "
-            "and private storage before deploying templates and forms (docs/coolify.md)."
-        )
     PrivacyNotice = apps.get_model("portal", "PrivacyNotice")
     FormTemplate = apps.get_model("portal", "FormTemplate")
     TemplateField = apps.get_model("portal", "TemplateField")
