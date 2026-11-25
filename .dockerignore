@@ -7,3 +7,16 @@ var
 __pycache__
 staticfiles
 portal/static/portal/ui.css
+node_modules
+
+.env.*
+*.db
+*.sqlite3
+*.sqlite3-*
+*.dump
+*.eml
+*.pem
+*.key
+*.log
+playwright-report
+test-results

@@ -1,10 +1,12 @@
 """Audited operator actions on claims, shared by the admin area and management commands."""
 
 import logging
+from dataclasses import dataclass
 
 from django.db import transaction
+from django.utils import timezone
 
-from portal.job_kinds import RENDER
+from portal import job_kinds
 from portal.models import Claim, Operation
 from portal.services import delivery, queue, retention
 
@@ -12,70 +14,129 @@ logger = logging.getLogger(__name__)
 
 
 class ActionRefused(Exception):
-    """The action is not possible now. `code` names the reason; the message is German."""
+    """The action is not possible now. `code` names the reason; the message is for operators."""
 
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code
 
 
-@transaction.atomic
-def retry(claim_id, *, actor, reason, acknowledge_duplicate_risk=False):
-    """Retry a failed render, or send again. Possible duplicates need acknowledgment."""
-    claim = Claim.objects.select_for_update().for_reference(claim_id).get()
-    if not reason.strip():
-        raise ActionRefused("reason_missing", "Bitte gib einen Grund an.")
+RENDER, RESEND = "render", "resend"
+
+
+@dataclass(frozen=True)
+class Retry:
+    """What processing a claim again does now.
+
+    `action` is RENDER, building a PDF that was never produced, or RESEND, sending the PDF
+    to Finance again. A resend with `duplicate_risk` needs the operator's acknowledgment,
+    because Finance may already hold the PDF.
+    """
+
+    action: str
+    duplicate_risk: bool = False
+
+
+def plan_retry(claim):
+    """What a retry of `claim` would do now. Raises ActionRefused when it cannot run."""
     if queue.claim_has_active_job(claim):
-        raise ActionRefused("active_job", "Für diesen Antrag läuft bereits eine Verarbeitung.")
+        raise ActionRefused("active_job", "This claim is already being processed.")
     if claim.state == Claim.State.READY:
         if not claim.pdf_key:
             raise ActionRefused(
                 "pdf_removed",
-                "Die PDF wurde bereits gelöscht und kann nicht erneut gesendet werden.",
+                "The PDF has already been deleted and cannot be sent again.",
             )
-        try:
-            delivery.retry(claim, acknowledge_duplicate_risk=acknowledge_duplicate_risk)
-        except delivery.DuplicateRisk as exc:
-            raise ActionRefused(
-                "duplicate_risk",
-                "Die E-Mail könnte bereits angekommen sein. Prüfe zuerst den Versand und "
-                "bestätige dann das Risiko eines doppelten Versands.",
-            ) from exc
-    elif not RENDER.requeue(claim):
+        return Retry(RESEND, duplicate_risk=delivery.may_have_reached_finance(claim))
+    if claim.state == Claim.State.FAILED and not claim.pdf_key:
+        return Retry(RENDER)
+    raise ActionRefused(
+        "not_retryable",
+        "This claim cannot be processed again in its current state.",
+    )
+
+
+@transaction.atomic
+def retry(claim_id, *, actor, reason, acknowledge_duplicate_risk=False):
+    """Carry out `plan_retry`. A resend that may duplicate needs acknowledgment."""
+    claim = Claim.objects.select_for_update().for_reference(claim_id).get()
+    if not reason.strip():
+        raise ActionRefused("reason_missing", "Please give a reason.")
+    plan = plan_retry(claim)
+    if plan.duplicate_risk and not acknowledge_duplicate_risk:
         raise ActionRefused(
-            "not_retryable",
-            "Dieser Antrag kann im aktuellen Zustand nicht erneut verarbeitet werden.",
+            "duplicate_risk",
+            "The email may already have arrived. Check the delivery first, then "
+            "acknowledge the risk of a duplicate delivery.",
         )
+    if plan.action == RESEND:
+        delivery.resend(claim)
+    else:
+        job_kinds.RENDER.requeue(claim)
     Operation.objects.create(claim=claim, action="retry", actor=actor, reason=reason.strip()[:500])
     return claim
 
 
 def delete(claim_id, *, actor, reason):
-    """Delete a claim's content now instead of at its retention date.
+    """Delete a claim now instead of at its retention date.
 
-    Pending processing and sending stop. The purge keeps the minimal reference record,
-    which shows this audited operation until retention removes it. A copy Finance
-    already received stays with Finance. An OSError or ClaimBusy after the purge has
-    begun leaves the claim purging, and the worker's cleanup finishes it.
+    Pending processing and sending stop, and the claim's record is deleted with its
+    content. The audited operation remains without a link to the claim. A copy Finance
+    already received stays with Finance. Returns True once the claim is gone, or False
+    when the purge began but could not finish now: the claim stays purging and the
+    worker's cleanup finishes it.
     """
     with transaction.atomic():
-        claim = Claim.objects.select_for_update().for_reference(claim_id).get()
+        claim = Claim.objects.select_for_update().for_reference(claim_id).first()
         if not reason.strip():
-            raise ActionRefused("reason_missing", "Bitte gib einen Grund an.")
-        if claim.state in {Claim.State.PURGING, Claim.State.PURGED}:
-            raise ActionRefused("already_deleted", "Dieser Antrag wurde bereits gelöscht.")
+            raise ActionRefused("reason_missing", "Please give a reason.")
+        if claim is None or claim.state == Claim.State.PURGING:
+            raise ActionRefused("already_deleted", "This claim has already been deleted.")
         try:
             retention.begin_purge(claim)
         except retention.ClaimBusy as exc:
             raise ActionRefused(
                 "busy",
-                "Der Antrag wird gerade verarbeitet oder versendet. "
-                "Versuche es in einigen Minuten erneut.",
+                "The claim is being processed or sent right now. Try again in a few minutes.",
             ) from exc
         Operation.objects.create(
             claim=claim, action="delete", actor=actor, reason=reason.strip()[:500]
         )
     # Evidence outside the database, so a restored backup can be purged again.
     logger.info("claim_deleted reference=%s", claim.pk)
-    retention.purge_claim(claim.pk)
-    return claim
+    try:
+        retention.purge_claim(claim.pk)
+    except (OSError, retention.ClaimBusy):
+        logger.error("purge_failed reference=%s", claim.pk)
+        return False
+    return True
+
+
+def archive(claim_ids, *, actor):
+    """Hide claims from the claims list. Returns how many were archived.
+
+    Processing and sending go on. An archived claim needs no resolution: retention
+    deletes it like a resolved one, or on its resolution date if it was never resolved.
+    Claims that are archived already or being deleted are left as they are.
+    """
+    return _set_archived(claim_ids, timezone.now(), action="archive", actor=actor)
+
+
+def unarchive(claim_ids, *, actor):
+    """Return archived claims to the claims list. Returns how many were unarchived."""
+    return _set_archived(claim_ids, None, action="unarchive", actor=actor)
+
+
+@transaction.atomic
+def _set_archived(claim_ids, archived_at, *, action, actor):
+    claims = list(
+        Claim.objects.select_for_update()
+        .filter(pk__in=claim_ids, archived_at__isnull=archived_at is not None)
+        .exclude(state=Claim.State.PURGING)
+        .values_list("pk", flat=True)
+    )
+    Claim.objects.filter(pk__in=claims).update(archived_at=archived_at)
+    Operation.objects.bulk_create(
+        Operation(claim_id=pk, action=action, actor=actor, reason="") for pk in claims
+    )
+    return len(claims)

@@ -1,9 +1,12 @@
 [project]
-name = "pt-reimbursement-portal"
-version = "0.1.0"
-description = "Private reimbursement intake, PDF assembly, and Moss inbox delivery."
+name = "reimbursements"
+# Releases take their version from the git tag (docs/releases.md).
+version = "0.0.0"
+description = "Self-hosted reimbursement forms, receipt processing, and email delivery."
+license = "Apache-2.0"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+  "cryptography>=46,<51",
   "django>=5.2.8,<5.3",
   "dj-database-url>=3,<4",
   "gunicorn>=23,<24",
@@ -16,6 +19,7 @@ dependencies = [
   "weasyprint>=70,<71",
   "whitenoise>=6.9,<7",
   "mozilla-django-oidc>=4,<5",
+  "sentry-sdk>=2.74,<3",
 ]
 
 [dependency-groups]

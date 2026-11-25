@@ -9,6 +9,7 @@ from django.core.exceptions import ValidationError
 from portal import roles
 from portal.intake import MAX_CLAIM_TOTAL
 from portal.models import Claim, Draft, Form, FormTemplate, PrivacyNotice, TemplateField
+from portal.services import terms
 
 pytestmark = pytest.mark.django_db
 
@@ -23,7 +24,7 @@ def post(prepared, data=None):
 
 def reopened(prepared):
     """The participant reloads after a configuration change and works on the new revision."""
-    revision = Form.objects.get(pk=prepared["form"].pk).revision()
+    revision = terms.of(Form.objects.get(pk=prepared["form"].pk)).revision
     Draft.objects.filter(pk=prepared["draft"].pk).update(revision=revision)
     prepared["data"]["revision"] = revision
 
@@ -64,8 +65,27 @@ def test_landing_page_redirects_to_the_open_primary_form(client, form, template)
     assert client.get("/").headers["Location"] == f"/f/{other.slug}/"
 
 
-def test_footer_links_the_impressum(client):
-    assert b"https://projecttogether.org/impressum/" in client.get("/").content
+@pytest.mark.parametrize("unavailable", ["recipient", "privacy_notice"])
+def test_landing_page_skips_a_primary_form_that_cannot_accept_claims(
+    client, form, settings, unavailable
+):
+    form.primary = True
+    form.save()
+    if unavailable == "recipient":
+        settings.APPROVED_DELIVERY_RECIPIENTS = ["other@example.invalid"]
+    else:
+        PrivacyNotice.objects.all().delete()
+    assert form.is_open() and client.get("/f/test/").status_code == 503
+    assert client.get("/").status_code == 200
+
+
+def test_footer_uses_operator_configuration(client, settings):
+    assert b"Impressum" not in client.get("/").content
+    settings.PORTAL_OPERATOR = "Beispielverein"
+    settings.PORTAL_LEGAL_URL = "https://example.invalid/legal/"
+    page = client.get("/").content.decode()
+    assert "Reimbursement Portal" in page and "Beispielverein" in page
+    assert 'href="https://example.invalid/legal/"' in page
 
 
 def test_submitted_form_link_starts_a_new_claim(client, accepted):
@@ -75,14 +95,20 @@ def test_submitted_form_link_starts_a_new_claim(client, accepted):
     assert Draft.objects.exclude(pk=first.pk).filter(claim__isnull=True).count() == 1
 
 
-def test_draft_form_is_closed_but_owners_can_preview(client, form):
-    form.status = Form.Status.DRAFT
+@pytest.mark.parametrize("status", [Form.Status.DRAFT, Form.Status.ARCHIVED])
+def test_unpublished_form_name_is_private_but_owners_can_preview(client, form, status):
+    form.name = "Private unpublished form name"
+    form.status = status
     form.save()
-    assert client.get("/f/test/").status_code == 403
+    response = client.get("/f/test/")
+    assert response.status_code == 403
+    assert form.name.encode() not in response.content
     user = get_user_model().objects.create_user("editor-subject", email="editor@example.invalid")
     roles.assign(user, {roles.FORM_EDITOR})
     client.force_login(user, backend="django.contrib.auth.backends.ModelBackend")
-    assert client.get("/f/test/").status_code == 403
+    response = client.get("/f/test/")
+    assert response.status_code == 403
+    assert form.name.encode() not in response.content
     form.owners.add(user)
     response = client.get("/f/test/")
     assert response.status_code == 200 and b"Vorschau" in response.content
@@ -191,7 +217,7 @@ def mileage_row(**changes):
         "kind": "mileage",
         "travel_date": "2026-10-20",
         "return_date": "2026-10-21",
-        "vehicle_registration": "B-PT 123",
+        "vehicle_registration": "B-AB 123",
         "route_from": "Hamburg",
         "route_to": "Berlin",
         "distance_km": "289",

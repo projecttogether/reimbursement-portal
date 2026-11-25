@@ -66,14 +66,14 @@ class Migration(migrations.Migration):
                 (
                     "declaration",
                     models.TextField(
-                        default="Hiermit bestätige ich, dass mir die geltend gemachten Aufwendungen tatsächlich und notwendigerweise ausschließlich für das Geschäft und zur Erfüllung der satzungsmäßigen Zwecke der ProjectTogether gGmbH entstanden sind.",
+                        default="Hiermit bestätige ich, dass die angegebenen Auslagen tatsächlich entstanden sind, dem genannten Zweck dienen und bisher nicht erstattet wurden.",
                         verbose_name="Erklärung",
                     ),
                 ),
                 (
                     "declaration_version",
                     models.CharField(
-                        default="external-reimbursement-2026-03",
+                        default="reimbursement-v1",
                         max_length=80,
                         verbose_name="Version der Erklärung",
                     ),
@@ -366,7 +366,7 @@ class Migration(migrations.Migration):
                 (
                     "recipient",
                     models.EmailField(
-                        max_length=254, verbose_name="Empfangspostfach (Moss/Finance)"
+                        max_length=254, verbose_name="Empfangspostfach (Buchhaltung)"
                     ),
                 ),
                 (

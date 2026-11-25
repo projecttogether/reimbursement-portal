@@ -9,6 +9,7 @@ import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from PIL import Image, ImageDraw
 
+from portal import dates, numbers
 from portal.models import (
     Claim,
     Delivery,
@@ -54,9 +55,17 @@ def local_settings(settings, tmp_path):
     settings.STATIC_ROOT.mkdir()
     settings.UPLOAD_SCANNER = "disabled"
     settings.MAIL_DELIVERY_MODE = "local"
+    # As set in the environment; tests that send with "mailersend" mode use it. Tests of
+    # Admin > Email clear it.
+    settings.MAILERSEND_API_TOKEN = "synthetic-test-token"
     settings.MIN_FREE_STORAGE_BYTES = 0
     settings.APPROVED_DELIVERY_RECIPIENTS = ["finance@example.invalid"]
     settings.TEST_RECIPIENT_ALLOWLIST = []
+    yield
+    # Requests and jobs set the app date and number format for the whole process; start
+    # each test with the defaults.
+    dates.use(dates.DEFAULT_DATE_FORMAT)
+    numbers.use(numbers.DEFAULT_NUMBER_FORMAT)
 
 
 class FakeDisk:
@@ -125,7 +134,7 @@ def image_bytes(*, signature=False, color="white", size=(900, 1200)):
     if signature:
         drawing.line(
             [(80, 160), (150, 60), (210, 170), (300, 80), (440, 150), (600, 100)],
-            fill="#00115a",
+            fill="#134e4a",
             width=5,
         )
     else:
@@ -200,7 +209,7 @@ def prepared(client, form):
         "expenses": [
             {
                 "id": str(row_id),
-                "merchant": "Test Rail",
+                "merchant": "Belegverkauf",
                 "purpose": "Workshop-Anreise",
                 "receipt_reference": "TEST-1",
                 "amount": "12,50",

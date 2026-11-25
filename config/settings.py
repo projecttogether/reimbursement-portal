@@ -9,6 +9,10 @@ from portal.constants import MAX_NORMALIZED_FILE_BYTES as MAX_NORMALIZED_FILE_BY
 from portal.constants import MAX_PDF_PAGES as MAX_PDF_PAGES
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+PORTAL_OPERATOR = os.getenv("PORTAL_OPERATOR", "")
+PORTAL_LEGAL_URL = os.getenv("PORTAL_LEGAL_URL", "")
+# Set in images built by the Deploy workflow (Dockerfile); empty in images built from source.
+APP_VERSION = os.getenv("APP_VERSION", "")
 DEBUG = os.getenv("DJANGO_DEBUG", "0") == "1"
 DEPLOYMENT_ENV = os.getenv("DEPLOYMENT_ENV", "development" if DEBUG else "production")
 if DEPLOYMENT_ENV not in {"development", "staging", "production"} or DEBUG != (
@@ -35,6 +39,7 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
+    "portal.middleware.AppSettingsMiddleware",
     "portal.middleware.RequestLimitsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "portal.middleware.AdminSessionMiddleware",
@@ -52,6 +57,7 @@ TEMPLATES = [
         "OPTIONS": {
             "context_processors": [
                 "django.template.context_processors.request",
+                "portal.context_processors.branding",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
             ]
@@ -59,21 +65,19 @@ TEMPLATES = [
     }
 ]
 
-# Admin sign-in through PT Login (Keycloak). Admin rights come from the groups claim.
+# Admin sign-in through Keycloak. Admin rights come from the groups claim.
 OIDC_RP_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "")
 OIDC_RP_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET", "")
 OIDC_ENABLED = bool(OIDC_RP_CLIENT_ID and OIDC_RP_CLIENT_SECRET)
-KEYCLOAK_BASE_URL = os.getenv("KEYCLOAK_BASE_URL", "https://auth.projecttogether.net").rstrip("/")
-KEYCLOAK_REALM = os.getenv("KEYCLOAK_REALM", "projecttogether")
+KEYCLOAK_BASE_URL = os.getenv(
+    "KEYCLOAK_BASE_URL", "https://auth.example.invalid" if DEBUG else ""
+).rstrip("/")
+KEYCLOAK_REALM = os.getenv("KEYCLOAK_REALM", "reimbursements" if DEBUG else "")
 KEYCLOAK_REALM_URL = f"{KEYCLOAK_BASE_URL}/realms/{KEYCLOAK_REALM}"
-# Where admins manage their PT Login account (profile menu in the admin sidebar).
+# Where admins manage their Keycloak account (profile menu in the admin sidebar).
 KEYCLOAK_ACCOUNT_URL = f"{KEYCLOAK_REALM_URL}/account/"
-KEYCLOAK_ADMIN_GROUP = os.getenv(
-    "KEYCLOAK_ADMIN_GROUP", "/projecttogether/tools/reimbursement-portal-admins"
-)
-KEYCLOAK_EDITOR_GROUP = os.getenv(
-    "KEYCLOAK_EDITOR_GROUP", "/projecttogether/tools/reimbursement-portal"
-)
+KEYCLOAK_ADMIN_GROUP = os.getenv("KEYCLOAK_ADMIN_GROUP", "/reimbursements/admins")
+KEYCLOAK_EDITOR_GROUP = os.getenv("KEYCLOAK_EDITOR_GROUP", "/reimbursements/editors")
 OIDC_OP_AUTHORIZATION_ENDPOINT = f"{KEYCLOAK_REALM_URL}/protocol/openid-connect/auth"
 OIDC_OP_TOKEN_ENDPOINT = f"{KEYCLOAK_REALM_URL}/protocol/openid-connect/token"
 OIDC_OP_USER_ENDPOINT = f"{KEYCLOAK_REALM_URL}/protocol/openid-connect/userinfo"
@@ -95,7 +99,7 @@ if DEBUG:
     AUTHENTICATION_BACKENDS.append("django.contrib.auth.backends.ModelBackend")
 LOGIN_URL = "admin:login"
 LOGIN_REDIRECT_URL = "/admin/"
-LOGIN_REDIRECT_URL_FAILURE = "/admin/kein-zugriff/"
+LOGIN_REDIRECT_URL_FAILURE = "/admin/no-access/"
 LOGOUT_REDIRECT_URL = "/"
 ADMIN_SESSION_SECONDS = 8 * 3600
 PRIVATE_STORAGE_ROOT = Path(os.getenv("PRIVATE_STORAGE_ROOT", str(BASE_DIR / "var/private")))
@@ -106,12 +110,19 @@ DATABASES = {
     "default": dj_database_url.parse(
         os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'var/development.sqlite3'}"),
         conn_max_age=60,
+        # A kept connection dies when PostgreSQL restarts. Each request and each round of
+        # the worker checks it before its first query and reconnects instead of failing.
+        conn_health_checks=True,
     )
 }
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+# The app language, timezone and date format are General settings in the admin area
+# (portal.app_settings). These are the defaults before they are saved.
 LANGUAGE_CODE = "de"
+LANGUAGES = [("de", "Deutsch"), ("en", "English")]
 TIME_ZONE = "Europe/Berlin"
 USE_TZ = True
+FORMAT_MODULE_PATH = ["portal.formats"]
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STORAGES = {
@@ -179,12 +190,24 @@ CONTENT_RETENTION_DAYS = 90
 UPLOAD_SCANNER = os.getenv("UPLOAD_SCANNER", "disabled" if DEBUG else "clamav")
 CLAMAV_HOST = os.getenv("CLAMAV_HOST", "scanner")
 CLAMAV_PORT = int(os.getenv("CLAMAV_PORT", "3310"))
-MAIL_DELIVERY_MODE = os.getenv("MAIL_DELIVERY_MODE", "local" if DEBUG else "mailersend")
+# "local" keeps every email as a private file (development only); "send" sends it with
+# the provider set up under Admin > Email. "mailersend" is the former name of "send".
+MAIL_DELIVERY_MODE = os.getenv("MAIL_DELIVERY_MODE", "local" if DEBUG else "send")
+if MAIL_DELIVERY_MODE not in {"local", "send", "mailersend"}:
+    raise ImproperlyConfigured("MAIL_DELIVERY_MODE must be local or send.")
+# Optional: each value set here wins over its field under Admin > Email, and the API token
+# chooses MailerSend (portal.services.email_connection).
 MAILERSEND_API_TOKEN = os.getenv("MAILERSEND_API_TOKEN", "")
 MAILERSEND_WEBHOOK_SIGNING_SECRET = os.getenv("MAILERSEND_WEBHOOK_SIGNING_SECRET", "")
-# Fixed for every form; the sender domain must be verified in MailerSend.
-MAIL_FROM_ADDRESS = "no-reply@projecttogether.org"
-MAIL_REPLY_TO_ADDRESS = "buchhaltung@projecttogether.org"
+# Shared by all forms; with MailerSend, verify the sender domain there.
+# Placeholders only for the local outbox: they would lock the admin's fields otherwise.
+_LOCAL_MAIL = DEBUG and MAIL_DELIVERY_MODE == "local"
+MAIL_FROM_ADDRESS = os.getenv(
+    "MAIL_FROM_ADDRESS", "no-reply@example.invalid" if _LOCAL_MAIL else ""
+)
+MAIL_REPLY_TO_ADDRESS = os.getenv(
+    "MAIL_REPLY_TO_ADDRESS", "finance@example.invalid" if _LOCAL_MAIL else ""
+)
 APPROVED_DELIVERY_RECIPIENTS = list(
     filter(
         None,
@@ -228,11 +251,11 @@ if not DEBUG:
         "DATABASE_URL",
         "ALLOWED_HOSTS",
         "HEALTHCHECK_TOKEN",
-        "MAILERSEND_API_TOKEN",
-        "MAILERSEND_WEBHOOK_SIGNING_SECRET",
         "APPROVED_DELIVERY_RECIPIENTS",
         "OIDC_CLIENT_ID",
         "OIDC_CLIENT_SECRET",
+        "KEYCLOAK_BASE_URL",
+        "KEYCLOAK_REALM",
     ]
     missing = [key for key in required if not os.getenv(key)]
     if (
@@ -244,8 +267,8 @@ if not DEBUG:
         raise ImproperlyConfigured(f"Missing production configuration: {', '.join(missing)}")
     if DATABASES["default"]["ENGINE"] != "django.db.backends.postgresql":
         raise ImproperlyConfigured("Production requires PostgreSQL.")
-    if UPLOAD_SCANNER != "clamav" or MAIL_DELIVERY_MODE != "mailersend":
-        raise ImproperlyConfigured("Production requires ClamAV and MailerSend.")
+    if UPLOAD_SCANNER != "clamav" or MAIL_DELIVERY_MODE == "local":
+        raise ImproperlyConfigured("Production requires ClamAV and sending email.")
     if not DOCUMENT_SANDBOX_ENABLED:
         raise ImproperlyConfigured("Production requires the document sandbox.")
     if os.getenv("TRUST_PROXY_HEADERS", "0") == "1" and not TRUSTED_PROXY_CIDRS:
@@ -255,3 +278,15 @@ if not DEBUG:
 
 # HSTS preload enrollment is an independent domain-owner decision.
 SILENCED_SYSTEM_CHECKS = ["security.W021"]
+
+# Error reports to Sentry or a compatible service: off without SENTRY_DSN.
+SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+if SENTRY_DSN:
+    from portal import error_reporting
+
+    error_reporting.start(
+        dsn=SENTRY_DSN,
+        environment=os.getenv("SENTRY_ENVIRONMENT") or DEPLOYMENT_ENV,
+        release=os.getenv("SENTRY_RELEASE")
+        or (f"reimbursement-portal@{APP_VERSION}" if APP_VERSION else None),
+    )

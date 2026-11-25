@@ -20,8 +20,12 @@ environment = os.environ | {
     "HEALTHCHECK_TOKEN": "ci-only",
     "OIDC_CLIENT_ID": "ci-only",
     "OIDC_CLIENT_SECRET": "ci-only-never-sent",
+    "KEYCLOAK_BASE_URL": "https://auth.example.invalid",
+    "KEYCLOAK_REALM": "reimbursements",
+    "MAIL_FROM_ADDRESS": "no-reply@example.invalid",
+    "MAIL_REPLY_TO_ADDRESS": "finance@example.invalid",
     "UPLOAD_SCANNER": "clamav",
-    "MAIL_DELIVERY_MODE": "mailersend",
+    "MAIL_DELIVERY_MODE": "send",
     "REQUIRE_WORKER_HEARTBEAT": "1",
     "DOCUMENT_SANDBOX_ENABLED": "1",
 }

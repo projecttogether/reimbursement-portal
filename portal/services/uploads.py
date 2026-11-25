@@ -5,6 +5,7 @@ uploads are never discarded, and their files are removed only through this modul
 """
 
 import uuid
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from django.db import transaction
 from django.db.models import Q, Sum
 
 from portal import intake
+from portal.i18n import t
 from portal.intake import IntakeError
 from portal.models import Draft, Job, Upload
 from portal.services import drafts, queue
@@ -50,11 +52,11 @@ def accept(participant, form_slug, *, file, kind, expense_id, draft_id, token, t
     if not storage_available():
         raise IntakeError(intake.message("upload_unavailable"), status=503)
     if kind not in {"receipt", "signature"}:
-        raise IntakeError("Bitte wähle eine Belegdatei oder Unterschrift aus.")
+        raise IntakeError(t("Please choose a receipt file or signature."))
     if truncated:
         raise IntakeError(intake.message(f"{kind}_too_large"), status=413)
     if not file:
-        raise IntakeError("Bitte wähle eine Belegdatei oder Unterschrift aus.")
+        raise IntakeError(t("Please choose a receipt file or signature."))
     extension = Path(file.name).suffix.lower()
     if extension not in (
         intake.SIGNATURE_EXTENSIONS if kind == "signature" else intake.RECEIPT_EXTENSIONS
@@ -63,7 +65,7 @@ def accept(participant, form_slug, *, file, kind, expense_id, draft_id, token, t
     try:
         expense_id = uuid.UUID(expense_id) if kind == "receipt" else None
     except (ValueError, TypeError, AttributeError) as exc:
-        raise IntakeError("Die Auslagenposition fehlt.") from exc
+        raise IntakeError(t("The expense item is missing.")) from exc
     limits = intake.limits()
     key = ""
     try:
@@ -75,7 +77,7 @@ def accept(participant, form_slug, *, file, kind, expense_id, draft_id, token, t
                 >= (limits.files_per_expense if kind == "receipt" else intake.MAX_SIGNATURE_FILES)
                 or draft.uploads.count() >= limits.draft_files
             ):
-                raise IntakeError("Bitte entferne zuerst eine vorhandene Datei.")
+                raise IntakeError(t("Please remove an existing file first."))
             if kind == "receipt":
                 ensure_receipts_fit(_receipt_bytes(draft) + file.size)
             try:
@@ -97,7 +99,7 @@ def accept(participant, form_slug, *, file, kind, expense_id, draft_id, token, t
             except ValueError as exc:
                 raise IntakeError(intake.message(f"{kind}_too_large"), status=413) from exc
             if not size:
-                raise IntakeError("Die Datei ist leer.")
+                raise IntakeError(t("The file is empty."))
             upload = Upload.objects.create(
                 id=upload_id,
                 draft=draft,
@@ -138,7 +140,7 @@ def _gate(participant, form_slug, upload_id, token, action):
         .first()
     )
     if draft_id is None:
-        raise IntakeError("Die Datei wurde nicht gefunden.", status=404)
+        raise IntakeError(t("The file was not found."), status=404)
     drafts.gate(participant, form_slug, draft_id, token, action)
     return Upload.objects.filter(pk=upload_id).first()
 
@@ -147,7 +149,7 @@ def owned(participant, form_slug, upload_id, token):
     """The upload, if the participant may read it; IntakeError otherwise."""
     upload = _gate(participant, form_slug, upload_id, token, drafts.READ)
     if upload is None:
-        raise IntakeError("Die Datei wurde nicht gefunden.", status=404)
+        raise IntakeError(t("The file was not found."), status=404)
     return upload
 
 
@@ -168,70 +170,82 @@ def discard(participant, form_slug, upload_id, token):
     try:
         upload = _gate(participant, form_slug, upload_id, token, drafts.REMOVE)
     except drafts.AlreadySubmitted as exc:
-        raise IntakeError("Eingereichte Belege können nicht geändert werden.", status=409) from exc
+        raise IntakeError(t("Submitted receipts cannot be changed."), status=409) from exc
     if upload is None:
         return  # A concurrent removal of the same upload got the draft lock first.
     list(Job.objects.select_for_update().filter(upload=upload))
     if _busy(Upload.objects.filter(pk=upload.pk)):
-        raise IntakeError(
-            "Die Datei wird gerade geprüft. Bitte versuche es kurz danach erneut.", status=409
-        )
+        raise IntakeError(t("The file is being checked. Please try again shortly."), status=409)
     remove_files(upload)
     upload.delete()
 
 
-def claimable(draft, upload_ids):
-    """Lock the draft's ready, unattached uploads by id, all present on disk and together
-    within one claim's receipt limits.
+@dataclass(frozen=True)
+class ClaimFiles:
+    """The checked files of a claim, ready to attach once the claim exists."""
 
-    Caller holds the draft lock in an atomic transaction.
+    # (upload, expense ID, position) in row order.
+    receipts: list
+    signature: Upload
+
+    def attach(self, claim):
+        for upload, _expense_id, position in self.receipts:
+            upload.claim, upload.position = claim, position
+            upload.save(update_fields=["claim", "position"])
+        self.signature.claim = claim
+        self.signature.save(update_fields=["claim"])
+
+
+def claimable(draft, expenses, signature_id):
+    """Lock and check the draft's files for a claim before anything is written.
+
+    Each expense row's files are receipts of that row, the signature is a signature, all
+    are ready, unattached and on disk, and the receipts fit one claim's limits. Caller
+    holds the draft lock in an atomic transaction.
     """
-    uploads = {
+    ids = [file_id for row in expenses for file_id in row["uploads"]] + [signature_id]
+    found = {
         str(upload.id): upload
         for upload in Upload.objects.select_for_update().filter(
-            draft=draft, id__in=upload_ids, claim__isnull=True
+            draft=draft, id__in=ids, claim__isnull=True
         )
     }
-    if len(uploads) != len(upload_ids) or any(
-        upload.state != Upload.State.READY for upload in uploads.values()
-    ):
-        raise IntakeError("Bitte warte, bis alle Belege und die Unterschrift geprüft sind.")
-    if any(not path_for(upload.normalized_key).is_file() for upload in uploads.values()):
-        raise IntakeError("Eine Datei ist nicht verfügbar. Bitte lade sie erneut hoch.")
-    receipts = [upload for upload in uploads.values() if upload.kind == "receipt"]
-    ensure_receipts_fit(
-        sum(upload.size for upload in receipts), sum(upload.pages for upload in receipts)
-    )
-    return uploads
-
-
-def attach(upload, claim, *, expense_id=None, position=0):
-    if expense_id is not None and (
+    if found.keys() != set(ids):
+        raise IntakeError(t("A file is unavailable. Please upload it again."))
+    receipts = [
+        (found[file_id], row["id"], position)
+        for row in expenses
+        for position, file_id in enumerate(row["uploads"])
+    ]
+    if any(
         upload.kind != "receipt" or str(upload.expense_id) != expense_id
+        for upload, expense_id, _position in receipts
     ):
-        raise IntakeError("Ein Beleg gehört nicht zu dieser Auslagenposition.")
-    upload.claim, upload.position = claim, position
-    upload.save(update_fields=["claim", "position"])
+        raise IntakeError(t("A receipt does not belong to this expense item."))
+    signature = found[signature_id]
+    if signature.kind != "signature":
+        raise IntakeError(t("Please draw or upload a signature."))
+    if any(upload.state != Upload.State.READY for upload in found.values()):
+        raise IntakeError(t("Please wait until all receipts and the signature have been checked."))
+    if any(not path_for(upload.normalized_key).is_file() for upload in found.values()):
+        raise IntakeError(t("A file is unavailable. Please upload it again."))
+    ensure_receipts_fit(
+        sum(upload.size for upload, *_ in receipts), sum(upload.pages for upload, *_ in receipts)
+    )
+    return ClaimFiles(receipts, signature)
 
 
-def mark_ready(upload_id, result):
-    """Publish a validation result. False when the upload was discarded meanwhile."""
+def mark_ready(upload_id, output):
+    """Record a validation's `NormalizedUpload`. False when the upload was discarded meanwhile."""
     upload = Upload.objects.select_for_update().filter(pk=upload_id).first()
     if not upload:
         return False
-    upload.normalized_key = result["normalized_key"]
-    upload.normalized_size = result["normalized_size"]
-    upload.media_type, upload.pages = result["media_type"], result["pages"]
+    upload.normalized_key, upload.normalized_size = output.key, output.size
+    upload.media_type, upload.pages = output.media_type, output.pages
     upload.state, upload.error_code = Upload.State.READY, ""
     upload.save()
     release_upload(upload.pk)
     return True
-
-
-def discard_output(upload, result):
-    """Remove a validation output that was never published."""
-    if result["normalized_key"] != upload.source_key:
-        remove_keys(result["normalized_key"])
 
 
 def mark_retrying(upload_id, error_code):
@@ -256,7 +270,8 @@ def expire_draft(draft_id):
 
 
 def expire_unattached(now):
-    """Accepted drafts can hold uploads left out of the claim. They keep the draft lifetime.
+    """Accepted drafts can hold uploads left out of the claim. Each goes 24 hours after its
+    upload.
 
     Returns the number of uploads whose files could not be removed.
     """

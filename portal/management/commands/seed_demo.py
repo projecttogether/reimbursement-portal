@@ -24,7 +24,7 @@ class Command(BaseCommand):
             slug="demo",
             defaults={
                 "template": template,
-                "name": "ProjectTogether Werkstatt",
+                "name": "Demo-Veranstaltung",
                 "field_values": {"kst": "DEMO", "ktr": "DEMO-2026", "id": "WS-1"},
                 "purpose_options": "\n".join(DEMO_PURPOSES),
                 "instructions": (

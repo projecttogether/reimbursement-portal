@@ -11,8 +11,8 @@ from django.test import override_settings
 from django.utils import timezone
 
 from portal.models import Claim, Delivery, DeliveryAttempt, DeliveryEvent, Job
-from portal.services.delivery import reconcile_unmatched
 from portal.services.drafts import digest
+from portal.services.evidence import reconcile_unmatched
 
 pytestmark = pytest.mark.django_db
 
@@ -52,6 +52,17 @@ def test_production_cannot_silently_use_development_defaults(tmp_path, mode, deb
         {"MAIL_DELIVERY_MODE": "local"},
         {"REQUIRE_WORKER_HEARTBEAT": "0"},
         {"DJANGO_SECRET_KEY": "development-secret"},
+        {"KEYCLOAK_BASE_URL": ""},
+        {"KEYCLOAK_REALM": ""},
+        {"MAIL_DELIVERY_MODE": "postcard"},
+        {},
+        # Admins can set up email under Admin > Email instead.
+        {
+            "MAILERSEND_API_TOKEN": "",
+            "MAILERSEND_WEBHOOK_SIGNING_SECRET": "",
+            "MAIL_FROM_ADDRESS": "",
+            "MAIL_REPLY_TO_ADDRESS": "",
+        },
     ],
 )
 def test_unsafe_production_settings_refuse_startup(tmp_path, override):
@@ -67,6 +78,12 @@ def test_unsafe_production_settings_refuse_startup(tmp_path, override):
         "MAILERSEND_WEBHOOK_SIGNING_SECRET": "synthetic",
         "APPROVED_DELIVERY_RECIPIENTS": "test@example.invalid",
         "HEALTHCHECK_TOKEN": "synthetic",
+        "OIDC_CLIENT_ID": "synthetic-client",
+        "OIDC_CLIENT_SECRET": "synthetic-secret",
+        "KEYCLOAK_BASE_URL": "https://auth.example.invalid",
+        "KEYCLOAK_REALM": "reimbursements",
+        "MAIL_FROM_ADDRESS": "no-reply@example.invalid",
+        "MAIL_REPLY_TO_ADDRESS": "finance@example.invalid",
         **override,
     }
     result = subprocess.run(
@@ -75,7 +92,8 @@ def test_unsafe_production_settings_refuse_startup(tmp_path, override):
         capture_output=True,
         text=True,
     )
-    assert result.returncode != 0
+    starts = override == {} or "MAILERSEND_API_TOKEN" in override
+    assert (result.returncode == 0) is starts, result.stderr
 
 
 def test_http_500_has_redacted_diagnostics_and_correlation(client, monkeypatch):
@@ -198,6 +216,14 @@ def test_claim_status_streams_beyond_100_without_n_plus_one(form, django_assert_
     records = [json.loads(line) for line in output.getvalue().splitlines()]
     assert sum("reference" in row for row in records) == 101
     assert "oldest_job_age_seconds" in records[-1]
+
+
+@pytest.mark.parametrize("path", ["/-/healthz", "/-/readyz"])
+def test_health_probes_reject_non_ascii_tokens(client, settings, path):
+    settings.DEBUG = False
+    settings.HEALTHCHECK_TOKEN = "test-probe-token"
+    response = client.get(path, headers={"X-Health-Token": "invalid-ä"})
+    assert response.status_code == 404
 
 
 def test_readiness_detects_dead_worker_and_old_queue(client, settings):

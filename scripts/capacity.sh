@@ -2,10 +2,10 @@
 set -euo pipefail
 umask 077
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
-capacity_project="pt-reimbursement-capacity-$(date +%s)-$$"
-export CAPACITY_IMAGE="pt-reimbursement-capacity:$capacity_project"
+capacity_project="reimbursements-capacity-$(date +%s)-$$"
+export CAPACITY_IMAGE="reimbursements-capacity:$capacity_project"
 capacity_compose=(docker compose --env-file /dev/null --project-name "$capacity_project" --file compose.capacity.yaml)
-capacity_output="${CAPACITY_OUTPUT_DIR:-$(mktemp -d /tmp/pt-reimbursement-capacity.XXXXXX)}"
+capacity_output="${CAPACITY_OUTPUT_DIR:-$(mktemp -d /tmp/reimbursements-capacity.XXXXXX)}"
 mkdir -p "$capacity_output"
 trap '"${capacity_compose[@]}" unpause worker >/dev/null 2>&1 || true; "${capacity_compose[@]}" down --volumes --remove-orphans' EXIT
 "${capacity_compose[@]}" build web

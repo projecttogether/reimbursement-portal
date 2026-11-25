@@ -5,13 +5,14 @@ from django.utils import timezone
 
 from portal.intake import IntakeError
 from portal.models import Draft, Form, PrivacyNotice
-from portal.services import drafts
-from portal.services.drafts import READ, REMOVE, SUBMIT, UPLOAD
+from portal.services import drafts, terms
+from portal.services.drafts import READ, REMOVE, REVIEW, SUBMIT, UPLOAD
 from tests.conftest import Participant
 
 pytestmark = pytest.mark.django_db
-EDITS = [REMOVE, UPLOAD, SUBMIT]
-ACCEPTS = [UPLOAD, SUBMIT]
+# Actions on unsubmitted drafts only, and actions that need an accepting form.
+EDITS = [REVIEW, REMOVE, UPLOAD, SUBMIT]
+ACCEPTS = [REVIEW, UPLOAD, SUBMIT]
 
 
 @pytest.fixture
@@ -44,7 +45,7 @@ def test_opening_starts_a_session_only_for_an_admitted_draft(participant, form, 
     assert participant.session is None
     settings.MAX_ACTIVE_DRAFTS = 10
     draft, token = drafts.open_draft(participant, form)
-    assert draft.session_hash == participant.session and draft.revision == form.revision()
+    assert draft.session_hash == participant.session and draft.revision == terms.of(form).revision
     assert participant.remembered("test") == (str(draft.pk), token)
 
 

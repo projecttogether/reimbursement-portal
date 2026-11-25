@@ -109,7 +109,7 @@ if (!fixtures)
       await page.locator(`#${id}`).fill(value);
     const row = page.locator(".expense-card");
     for (const [field, value] of Object.entries({
-      merchant: "Test Rail",
+      merchant: "Belegverkauf",
       amount: "12,50",
     }))
       await row.locator(`[data-field="${field}"]`).fill(value);

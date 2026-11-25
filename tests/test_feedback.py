@@ -13,8 +13,10 @@ from django.template.loader import render_to_string
 from pypdf import PdfReader
 
 from portal.constants import PAYMENT_TIMING
+from portal.i18n import t
 from portal.jobs import run_one
 from portal.models import Claim, ClaimReferenceCounter
+from portal.services import terms
 from portal.services.capacity import temporary_workspace
 from portal.services.documents import build_claim_pdf
 from portal.services.references import allocate_reference
@@ -88,7 +90,7 @@ def test_mileage_only_needs_no_receipt_or_duplicate_trip_fields(prepared, round_
         trip_destination="",
         trip_start="",
         trip_end="",
-        expenses=[mileage_row(round_trip=round_trip, vehicle_registration="b-pt 123")],
+        expenses=[mileage_row(round_trip=round_trip, vehicle_registration="b-ab 123")],
     )
     if not round_trip:
         prepared["data"]["expenses"][0]["return_date"] = "stale invalid date"
@@ -96,7 +98,7 @@ def test_mileage_only_needs_no_receipt_or_duplicate_trip_fields(prepared, round_
     claim = Claim.objects.get()
     row = claim.expenses.get()
     assert claim.uploads.count() == 1
-    assert row.vehicle_registration == "B-PT 123"
+    assert row.vehicle_registration == "B-AB 123"
     assert row.purpose == claim.purpose
     assert bool(row.return_date) == round_trip
     assert row.billed_km == 289 * (2 if round_trip else 1)
@@ -124,8 +126,10 @@ def test_reference_is_stable_searchable_and_used_on_confirmation(prepared):
     assert claim.reference == reference
     page = prepared["client"].get(response.json()["receipt_url"]).content.decode()
     assert reference in page
-    assert PAYMENT_TIMING in page
-    assert "14 Tagen" in page and "30 Tage" in page
+    assert t(PAYMENT_TIMING) in page
+    assert "Kontaktadresse im Formular" in page
+    # The status script's messages aside, the page promises no timing or retention.
+    page = re.sub(r'<script id="status-text".*?</script>', "", page, flags=re.S)
     assert "Woche" not in page
     assert "gespeichert" not in page and "gelöscht" not in page
     assert "Finance" not in page
@@ -159,12 +163,12 @@ def test_mileage_details_and_reference_reach_pdf_and_email(prepared, settings):
         "portal/summary.html",
         {"claim": claim, "expenses": claim.expenses.all(), "signature_uri": ""},
     )
-    assert "B-PT 123" in html and "21.10.2026" in html
+    assert "B-AB 123" in html and "21.10.2026" in html
     with temporary_workspace() as workspace:
         output, _ = build_claim_pdf(claim, workspace)
         text = "".join(page.extract_text() for page in PdfReader(output).pages)
         assert claim.reference in text
-        assert "B-PT 123" in text and "21.10.2026" in text
+        assert "B-AB 123" in text and "21.10.2026" in text
     while run_one():
         pass
     claim.refresh_from_db()
@@ -192,4 +196,4 @@ def test_drafts_opened_before_the_intake_change_must_reload(prepared):
     assert "aktualisiert" in response.json()["error"]
     assert not Claim.objects.exists()
     assert prepared["client"].get("/f/test/").status_code == 200
-    assert Draft.objects.filter(revision=prepared["form"].revision()).exists()
+    assert Draft.objects.filter(revision=terms.of(prepared["form"]).revision).exists()
