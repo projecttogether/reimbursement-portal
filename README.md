@@ -9,6 +9,25 @@ The app includes configurable form templates, receipt and mileage expenses, priv
 uploads, malware scanning, PDF compression, role-based administration, delivery
 tracking, retries, retention cleanup, and health checks.
 
+## Screenshots
+
+Participants fill in a form in German or English, on a computer or a phone:
+
+<p>
+  <img src="docs/screenshots/participant-form.png" alt="The participant form: title, steps and the first section, Deine Angaben" width="620">
+  <img src="docs/screenshots/participant-form-phone.png" alt="The same form on a phone" width="190">
+</p>
+
+Admins see every claim and how far it has been processed, in light or dark mode:
+
+<p>
+  <img src="docs/screenshots/admin-claims.png" alt="The admin area: the sidebar and the list of claims" width="405">
+  <img src="docs/screenshots/admin-claim-dark.png" alt="A claim in dark mode: its details and its processing status" width="405">
+</p>
+
+The screenshots show synthetic data: the demo form of `seed_demo` and the claims of
+the browser smoke test ([browser checks](docs/browser-checks.md)).
+
 ## Run locally
 
 Requires Docker with Compose. Local delivery captures private `.eml` files and

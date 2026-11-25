@@ -20,3 +20,5 @@ node_modules
 *.log
 playwright-report
 test-results
+# The README's screenshots; the app does not use them.
+docs/screenshots
